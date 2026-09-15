@@ -12,7 +12,8 @@ export type NodeType =
   | "REACT_HOOK"
   | "ENTITY"
   | "KAFKA_TOPIC"
-  | "TEST";
+  | "TEST"
+  | "ROUTE";
 
 export type EdgeType =
   | "CONTAINS"
@@ -25,7 +26,8 @@ export type EdgeType =
   | "DEPENDS_ON"
   | "PRODUCES"
   | "CONSUMES"
-  | "TESTED_BY";
+  | "TESTED_BY"
+  | "MAPS_TO_ENDPOINT";
 
 export type ResolutionConfidence = "high" | "medium" | "low";
 
@@ -65,6 +67,13 @@ export interface UnresolvedReference {
   line?: number;
   /** first argument's literal string value, if the call site passes one (e.g. kafkaTemplate.send("topic", ...)) */
   firstStringArg?: string;
+  /**
+   * JSX attribute name -> value, captured generically for any JSX element (kind: "jsx").
+   * String-literal attributes keep their literal value; an `element`/`component` attribute
+   * whose value is itself a JSX tag keeps that inner tag's name. Used for prop-list metadata on
+   * RENDERS edges and for react-router Route detection (`path`, `element`/`component`).
+   */
+  attributes?: Record<string, string>;
 }
 
 export interface ParsedSymbol {

@@ -157,17 +157,18 @@ Implement the change
 code_impact <changed symbols>                   # confirm nothing was missed, incl. affected tests
    |
    v
-Run the tests code_impact flagged as affected (Java/Spring side); for
-React, still locate tests near affected files by naming convention (no
-TESTED_BY edge on that side yet)
+Run the tests code_impact flagged as affected on both sides — Java/Spring
+tests via `@Test`/`@SpringBootTest`/... class → subject class TESTED_BY
+edges, React tests via `X.test.tsx` → `X` file-naming TESTED_BY edges.
 ```
 
 ## 7. Known limitations
 
-CodeGraph MCP has done Milestones 1-3 plus **Phase 2 (Java/Spring depth)**
-in full; **Phase 3 (React depth)** hasn't started — see
-`codegraph-mcp-implementation-plan.md` for the complete roadmap. Calibrate
-trust in the graph accordingly:
+CodeGraph MCP has done Milestones 1-3, **Phase 2 (Java/Spring depth)**, and
+**Phase 3 (React depth)** in full — see `codegraph-mcp-implementation-plan.md`
+for the complete roadmap and what's intentionally out of scope (Redux/state
+management, Feign/WebClient/Scheduler). Calibrate trust in the graph
+accordingly:
 
 - **Call resolution is best-effort, not a compiler.** Java: constructor/field
   type-based resolution, same-package resolution, plus a "unique name in
@@ -189,29 +190,46 @@ trust in the graph accordingly:
   params + `@Autowired` fields), `@Qualifier`-based disambiguation, dynamic
   Kafka topic expressions (non-literal `.send(...)` args are skipped, not
   guessed), Feign/WebClient/RestTemplate/Spring Batch/Scheduler/Redis.
-- **React — still lightweight V1 only (Phase 3 not started).** Component/hook
-  tagging, render tree (`RENDERS`), hook usage (`USES_HOOK`), and plain
-  function calls (`CALLS`) are modeled. **Not modeled:** React Router (route
-  → page), Redux/Context/state-management flows (`useSelector`/`dispatch`),
-  prop-passing relationships, and React test mapping (no `TESTED_BY` on this
-  side yet — locate tests by naming convention instead).
+- **React — modeled (Phase 3 done):** component/hook tagging, render tree
+  (`RENDERS`, with prop names in `metadata.props`), hook usage (`USES_HOOK`),
+  plain function calls (`CALLS`), react-router `<Route path="..."
+  element={<X/>}>` (v6) / `component={X}` (v5) mapping to a `ROUTE` node,
+  frontend API-client detection (`fetch(...)` and any `xxx.get/post/put/
+  patch/delete(url, ...)` call — axios, a custom wrapper, no specific library
+  required) that **joins the same shared node** as the matching Spring
+  `REST_ENDPOINT` when both sides are indexed, and file-naming-based test
+  mapping (`LoanForm.test.tsx` → `LoanForm`, TESTED_BY the file itself since
+  JS tests are `describe`/`it` blocks, not classes).
+- **React — still not modeled:** Redux/Context/state-management flows
+  (`useSelector`/`dispatch`), and the FE↔BE endpoint join requires the path
+  to match exactly after normalization — a `${id}`/`:id`-shaped template
+  segment normalizes to the same `{param}` Spring uses, but anything odder
+  (query strings, a base-URL prefix built at runtime, a non-literal HTTP
+  method) won't match.
 - **Object-literal exports aren't parsed** (e.g. `export const api = { get:
   ... }`) — only top-level `function`/`class`/`const () => {}` declarations
   and class methods are indexed. A common `api.get(...)` client pattern will
   only resolve if `api` methods are individual named exports, not object
-  properties.
+  properties — this also means an API client built as `export const api = {
+  get: (url) => fetch(url) }` won't be detected (the `fetch` call is inside
+  an object property, not a tracked top-level function).
 - **Cross-file staleness on rename/delete**: incremental indexing only
   re-resolves the files it re-parses; a caller in an *unchanged* file that
   used to point at a since-renamed symbol in a *changed* file can go stale
-  until `codegraph index --force`. A Kafka topic/REST endpoint node's
+  until `codegraph index --force`. A Kafka topic/REST endpoint/route node's
   displayed `file`/`line` reflects whichever file was indexed most recently
   among the files that reference it — cosmetic only, doesn't affect edges.
+- **Default `maxDepth` (4) can be too shallow for a full-stack trace.**
+  Route → page → hook → API client → endpoint → controller → service →
+  repository is easily 6+ hops. `code_path`/`code_impact` accept an explicit
+  `depth` argument — raise it for full-stack queries rather than assuming "no
+  path" means "no relationship."
 
 None of this blocks the core value (call graphs, REST endpoint tracing, DI/
-JPA/Kafka graphs on the Java side, React component/hook tracing, blast-radius
-analysis) — it just means the graph is a strong hint, not ground truth.
-Always verify with `code_explore`'s source output before assuming a wiring
-is complete.
+JPA/Kafka graphs on the Java side, React component/hook/route/API-client
+tracing, full-stack blast-radius analysis) — it just means the graph is a
+strong hint, not ground truth. Always verify with `code_explore`'s source
+output before assuming a wiring is complete.
 
 ## Troubleshooting
 

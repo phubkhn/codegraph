@@ -8,16 +8,25 @@ exposes three MCP tools so an AI coding agent (Claude Code) can query it
 instead of grepping the repo.
 
 This follows `codegraph-mcp-implementation-plan.md`: Milestones 1-3
-(foundation, generic graph, MCP) are done, and **Phase 2 (Java/Spring depth)**
-is done — constructor + `@Autowired` field injection, JPA entity graph
-(`@Entity` + `@OneToOne/@OneToMany/@ManyToOne/@ManyToMany`), repository
-generic-entity linking, Kafka producer/consumer graph, and best-effort test
-mapping (`@Test`/`@SpringBootTest`/... class → subject class by naming
-convention). **Phase 3 (React depth — Router, Redux/state, deeper hook/prop
-tracing, React test mapping)** is not started yet; React support today is the
-lightweight component/hook/render tagging from the original V1 scope. See
-[Known limitations](docs/claude-code-integration.md#known-limitations) for
-exactly what's modeled vs not, on both sides.
+(foundation, generic graph, MCP), **Phase 2 (Java/Spring depth)**, and
+**Phase 3 (React depth)** are all done:
+
+- **Phase 2**: constructor + `@Autowired` field injection, JPA entity graph
+  (`@Entity` + `@OneToOne/@OneToMany/@ManyToOne/@ManyToMany`), repository
+  generic-entity linking, Kafka producer/consumer graph, best-effort test
+  mapping (`@Test`/`@SpringBootTest`/... class → subject class by naming
+  convention).
+- **Phase 3**: JSX prop names on render edges, frontend API-client detection
+  (`fetch`/axios-shaped calls) that resolves to the **same shared node** as
+  the matching Spring `REST_ENDPOINT` — so a full-stack trace from a
+  react-router `<Route>` down to a `@Repository` method works in one
+  `code_path` call — react-router `<Route>` mapping, and file-naming-based
+  React test mapping.
+- **Not implemented** (by design, lower priority per the plan): Redux/Context
+  state-management flows, Feign/WebClient/Scheduler/Spring Batch/Redis.
+
+See [Known limitations](docs/claude-code-integration.md#7-known-limitations)
+for exactly what's modeled vs not, on both sides.
 
 ## Quick start
 
@@ -98,19 +107,24 @@ automatically, on top of the built-in ignore/deny lists (`node_modules`,
 
 - **Node types**: `FILE`, `CLASS`, `INTERFACE`, `ENUM`, `FUNCTION`, `METHOD`,
   `VARIABLE`, `REST_ENDPOINT`, `REACT_COMPONENT`, `REACT_HOOK`, `ENTITY`,
-  `KAFKA_TOPIC`, `TEST`.
+  `KAFKA_TOPIC`, `TEST`, `ROUTE`.
 - **Edge types**: `CONTAINS`, `IMPORTS`, `CALLS`, `EXTENDS`, `IMPLEMENTS`,
-  `RENDERS`, `USES_HOOK`, `DEPENDS_ON` (DI / JPA relationship / repository
-  entity), `PRODUCES` / `CONSUMES` (Kafka), `TESTED_BY`.
+  `RENDERS` (carries `metadata.props`: JSX prop names), `USES_HOOK`,
+  `DEPENDS_ON` (DI / JPA relationship / repository entity), `PRODUCES` /
+  `CONSUMES` (Kafka), `TESTED_BY`, `MAPS_TO_ENDPOINT` (frontend API-client
+  call → backend `REST_ENDPOINT`).
 - Spring/React specifics live in node `metadata` (e.g.
   `springComponentType`, `httpMethod`, `path`, `framework`,
   `repositoryEntity`, `relationshipType`), not as new core concepts — the
   core graph stays framework-agnostic; `*-tags.ts` per language is the only
   place that knows about Spring/React annotations and conventions.
-- `REST_ENDPOINT` and `KAFKA_TOPIC` nodes use a stable, qualifiedName-only id
-  (not file/line-based) so a route/topic referenced from multiple files
-  (e.g. a Kafka producer in one file and a `@KafkaListener` consumer in
-  another) converges on one shared node instead of duplicating it.
+- `REST_ENDPOINT`, `KAFKA_TOPIC`, and `ROUTE` nodes use a stable,
+  qualifiedName-only id (not file/line-based) so the same route/topic/endpoint
+  referenced from multiple files — a Kafka producer and its
+  `@KafkaListener` consumer, or a React `fetch("/api/loans", ...)` call and
+  the Spring `@PostMapping` that handles it — converges on one shared node
+  instead of duplicating it. This is how the frontend and backend graphs join
+  into one full-stack trace with no separate "integration" step.
 
 ## MCP tools
 
@@ -134,8 +148,9 @@ the full setup guide, hook example, and suggested `CLAUDE.md` rules.
 ## Development
 
 ```bash
-npm test          # vitest — unit + integration tests, including the
-                   # A->B->C call-graph fixture and a Spring+React fullstack fixture
+npm test          # vitest — unit + integration tests: A->B->C call-graph fixture,
+                   # Spring depth (DI/JPA/Kafka/tests), React depth (props/API client
+                   # join/router/tests), and a basic Spring+React fullstack fixture
 npm run build      # tsc
 npm run dev        # tsc --watch
 ```

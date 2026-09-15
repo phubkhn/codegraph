@@ -23,6 +23,10 @@ export interface SymbolContext {
   /** for a KAFKA_TOPIC node: which @KafkaListener methods consume it */
   consumedBy: GraphNode[];
   tests: GraphNode[];
+  /** for a frontend API-client function: which backend REST_ENDPOINT it calls */
+  mapsToEndpoint: GraphNode[];
+  /** for a REST_ENDPOINT node: which frontend functions call it */
+  calledFromFrontend: GraphNode[];
 }
 
 export interface ExploreOptions {
@@ -68,6 +72,8 @@ export async function buildSymbolContext(
   const producedBy = incoming.filter((r) => r.edgeType === "PRODUCES").map((r) => r.node);
   const consumedBy = incoming.filter((r) => r.edgeType === "CONSUMES").map((r) => r.node);
   const tests = incoming.filter((r) => r.edgeType === "TESTED_BY").map((r) => r.node);
+  const mapsToEndpoint = outgoing.filter((r) => r.edgeType === "MAPS_TO_ENDPOINT").map((r) => r.node);
+  const calledFromFrontend = incoming.filter((r) => r.edgeType === "MAPS_TO_ENDPOINT").map((r) => r.node);
 
   let source: string | undefined;
   let truncatedSource = false;
@@ -95,6 +101,8 @@ export async function buildSymbolContext(
     producedBy,
     consumedBy,
     tests,
+    mapsToEndpoint,
+    calledFromFrontend,
   };
 }
 

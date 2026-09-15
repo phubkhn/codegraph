@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizePath, normalizePathParams } from "../../src/languages/java/spring-tags.js";
+import { joinPath as normalizePath, normalizePathParams } from "../../src/core/http-path.js";
 
 describe("normalizePath / normalizePathParams", () => {
   it("joins base and sub paths without duplicate slashes", () => {

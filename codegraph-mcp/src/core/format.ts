@@ -59,6 +59,12 @@ function formatSymbolContext(ctx: SymbolContext): string {
   if (ctx.tests.length > 0) {
     lines.push("", "### Tests", ...ctx.tests.map((n) => `- ${formatNodeRef(n)}`));
   }
+  if (ctx.mapsToEndpoint.length > 0) {
+    lines.push("", "### Calls backend endpoint", ...ctx.mapsToEndpoint.map((n) => `- ${formatNodeRef(n)}`));
+  }
+  if (ctx.calledFromFrontend.length > 0) {
+    lines.push("", "### Called from frontend", ...ctx.calledFromFrontend.map((n) => `- ${formatNodeRef(n)}`));
+  }
 
   if (ctx.source) {
     lines.push("", "### Source", "```", ctx.source, "```");
@@ -109,10 +115,14 @@ function groupKey(node: GraphNode, viaEdgeType: string): string {
       return "Kafka consumers";
     case "DEPENDS_ON":
       return "dependents (DI / JPA relationship / repository entity)";
+    case "MAPS_TO_ENDPOINT":
+      return "frontend API calls";
   }
   switch (node.type) {
     case "REST_ENDPOINT":
       return "endpoints";
+    case "ROUTE":
+      return "routes";
     case "REACT_COMPONENT":
       return "React components";
     case "REACT_HOOK":

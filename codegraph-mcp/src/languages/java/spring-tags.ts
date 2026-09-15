@@ -1,5 +1,6 @@
 import type { ParsedFile, ParsedSymbol } from "../../core/model/types.js";
 import type { AnnotationInfo } from "./java-parser.js";
+import { endpointQualifiedName, joinPath } from "../../core/http-path.js";
 
 const COMPONENT_ANNOTATIONS: Record<string, string> = {
   RestController: "controller",
@@ -82,13 +83,13 @@ export function applySpringTags(file: ParsedFile): void {
         if (!mappingAnn) continue;
 
         const httpMethod = MAPPING_ANNOTATIONS[mappingAnn.name] ?? extractRequestMethod(mappingAnn) ?? "ANY";
-        const path = normalizePath(basePath ?? "", mappingPath(mappingAnn));
+        const path = joinPath(basePath ?? "", mappingPath(mappingAnn));
 
-        const endpointQualifiedName = `ENDPOINT:${httpMethod} ${path}`;
+        const endpointQName = endpointQualifiedName(httpMethod, path);
         extraSymbols.push({
           type: "REST_ENDPOINT",
           name: `${httpMethod} ${path}`,
-          qualifiedName: endpointQualifiedName,
+          qualifiedName: endpointQName,
           startLine: method.startLine,
           endLine: method.startLine,
           parentQualifiedName: file.path,
@@ -96,7 +97,7 @@ export function applySpringTags(file: ParsedFile): void {
         });
 
         file.references.push({
-          fromQualifiedName: endpointQualifiedName,
+          fromQualifiedName: endpointQName,
           rawName: method.qualifiedName,
           kind: "call",
           edgeType: "CALLS",
@@ -185,16 +186,3 @@ function extractRequestMethod(ann: AnnotationInfo): string | undefined {
   return parts[parts.length - 1];
 }
 
-export function normalizePath(base: string, sub: string): string {
-  const combined = `/${base}/${sub}`.replace(/\/+/g, "/");
-  const withoutTrailing = combined.length > 1 ? combined.replace(/\/$/, "") : combined;
-  return normalizePathParams(withoutTrailing);
-}
-
-/** Normalizes {id}, :id path params to a canonical {param} form for FE/BE matching. */
-export function normalizePathParams(path: string): string {
-  return path
-    .split("/")
-    .map((seg) => (seg.startsWith("{") && seg.endsWith("}") ? "{param}" : seg.startsWith(":") ? "{param}" : seg))
-    .join("/");
-}

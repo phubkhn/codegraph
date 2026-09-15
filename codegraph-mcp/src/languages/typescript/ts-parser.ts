@@ -281,7 +281,7 @@ function collectReferences(
     if (!jsx) continue;
     const opening = jsx.type === "jsx_self_closing_element" ? jsx : jsx.childForFieldName("open_tag");
     const nameNode = opening?.childForFieldName("name");
-    if (!nameNode) continue;
+    if (!nameNode || !opening) continue;
     const tagName = textOf(nameNode, source);
     if (!/^[A-Z]/.test(tagName)) continue; // skip lowercase HTML elements
     references.push({
@@ -290,8 +290,113 @@ function collectReferences(
       kind: "jsx",
       edgeType: "RENDERS",
       line: lineOf(jsx),
+      attributes: extractJsxAttributes(opening, source),
     });
   }
+
+  collectApiClientCalls(body, fromQualifiedName, references, source);
+}
+
+/** Attribute name -> best-effort value; for an `element`/`component`-style attribute whose value is
+ *  itself a JSX tag, the inner tag's name is captured instead of raw source (used by react-router
+ *  Route detection: `element={<LoanDetailPage />}` / `component={LoanDetailPage}`). */
+function extractJsxAttributes(opening: Node, source: string): Record<string, string> {
+  const attrs: Record<string, string> = {};
+  for (const attr of opening.childrenForFieldName("attribute")) {
+    if (!attr) continue;
+    const nameNode = attr.namedChild(0);
+    if (!nameNode) continue;
+    const name = textOf(nameNode, source);
+    const valueNode = attr.namedChild(1);
+    if (!valueNode) {
+      attrs[name] = "true";
+    } else if (valueNode.type === "string") {
+      attrs[name] = stripQuotes(textOf(valueNode, source));
+    } else if (valueNode.type === "jsx_expression") {
+      const inner = valueNode.namedChild(0);
+      if (inner?.type === "jsx_self_closing_element") {
+        attrs[name] = textOf(inner.childForFieldName("name"), source);
+      } else if (inner?.type === "jsx_element") {
+        attrs[name] = textOf(inner.childForFieldName("open_tag")?.childForFieldName("name"), source);
+      } else if (inner) {
+        attrs[name] = textOf(inner, source).slice(0, 200);
+      }
+    }
+  }
+  return attrs;
+}
+
+const HTTP_METHODS = new Set(["get", "post", "put", "patch", "delete", "head", "options"]);
+
+/**
+ * Detects `fetch(url, {method})` and `xxx.get/post/put/patch/delete(url, ...)`-shaped calls (axios,
+ * a custom api wrapper, etc. — no specific library name required) whose first argument is a string
+ * or template literal that looks like a path, and emits a MAPS_TO_ENDPOINT reference targeting the
+ * exact same `ENDPOINT:{METHOD} {path}` qualifiedName scheme the Java/Spring side uses for
+ * REST_ENDPOINT nodes, so a frontend call and its backend handler converge on one shared node.
+ */
+function collectApiClientCalls(body: Node, fromQualifiedName: string, references: UnresolvedReference[], source: string): void {
+  for (const call of body.descendantsOfType(["call_expression"])) {
+    if (!call) continue;
+    const fnNode = call.childForFieldName("function");
+    if (!fnNode) continue;
+    const argsList = call.childForFieldName("arguments");
+    const firstArg = argsList?.namedChild(0);
+    if (!firstArg) continue;
+    const pathLiteral = stringOrTemplatePath(firstArg, source);
+    if (!pathLiteral || !pathLiteral.startsWith("/")) continue;
+
+    let httpMethod: string | undefined;
+    if (fnNode.type === "identifier" && textOf(fnNode, source) === "fetch") {
+      const optionsArg = argsList?.namedChild(1);
+      httpMethod = extractFetchMethod(optionsArg, source) ?? "GET";
+    } else if (fnNode.type === "member_expression") {
+      const property = textOf(fnNode.childForFieldName("property"), source).toLowerCase();
+      if (HTTP_METHODS.has(property)) httpMethod = property.toUpperCase();
+    }
+    if (!httpMethod) continue;
+
+    const path = normalizeTemplateParams(pathLiteral);
+    references.push({
+      fromQualifiedName,
+      rawName: `ENDPOINT:${httpMethod} ${path}`,
+      kind: "call",
+      edgeType: "MAPS_TO_ENDPOINT",
+      line: lineOf(call),
+      attributes: { httpMethod, path },
+    });
+  }
+}
+
+/** String literal or template literal text with `${...}` interpolations replaced by `{param}`, e.g. `/api/loans/${id}` -> `/api/loans/{param}`. */
+function stringOrTemplatePath(node: Node, source: string): string | undefined {
+  if (node.type === "string") return stripQuotes(textOf(node, source));
+  if (node.type === "template_string") {
+    return node.namedChildren
+      .map((c) => (c && c.type === "template_substitution" ? "{param}" : c ? textOf(c, source) : ""))
+      .join("")
+      .replace(/`/g, "");
+  }
+  return undefined;
+}
+
+function normalizeTemplateParams(path: string): string {
+  return path
+    .split("/")
+    .map((seg) => (seg === "{param}" || /^[:{].*[}]?$/.test(seg) ? "{param}" : seg))
+    .join("/");
+}
+
+function extractFetchMethod(optionsArg: Node | null | undefined, source: string): string | undefined {
+  if (!optionsArg || optionsArg.type !== "object") return undefined;
+  for (const prop of optionsArg.namedChildren) {
+    if (!prop || prop.type !== "pair") continue;
+    const keyNode = prop.childForFieldName("key");
+    if (!keyNode || textOf(keyNode, source).replace(/['"]/g, "") !== "method") continue;
+    const valueNode = prop.childForFieldName("value");
+    if (valueNode?.type === "string") return stripQuotes(textOf(valueNode, source)).toUpperCase();
+  }
+  return undefined;
 }
 
 function stripQuotes(s: string): string {

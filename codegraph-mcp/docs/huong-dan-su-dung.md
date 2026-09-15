@@ -1,0 +1,409 @@
+# Hướng dẫn sử dụng CodeGraph MCP (Tiếng Việt)
+
+CodeGraph MCP là một **MCP server local-first**: nó quét source code của bạn
+(Java/Spring Boot và React/TypeScript), dựng một **graph** (đồ thị) gồm
+file/class/method/component và các quan hệ giữa chúng (gọi hàm, REST
+endpoint, React hook/render, DI, JPA, Kafka...), lưu vào một file SQLite cục
+bộ (`.codegraph/graph.db`), rồi expose ra 3 tool MCP để AI coding agent
+(Claude Code) truy vấn thay vì phải `grep`/`glob` cả repo.
+
+Tài liệu gốc (tiếng Anh) chi tiết hơn về setup và giới hạn nằm ở
+[`claude-code-integration.md`](claude-code-integration.md). File này là bản
+hướng dẫn tiếng Việt, tập trung vào: cách dùng thư viện, và cách **áp dụng nó
+vào Skill / Agent / script khác**.
+
+---
+
+## 1. Thư viện làm được gì
+
+- Quét code Java/Spring và React/TypeScript, dựng graph các node:
+  `FILE`, `CLASS`, `INTERFACE`, `ENUM`, `FUNCTION`, `METHOD`, `VARIABLE`,
+  `REST_ENDPOINT`, `REACT_COMPONENT`, `REACT_HOOK`, `ENTITY`, `KAFKA_TOPIC`,
+  `TEST`.
+- Và các quan hệ (edge): `CONTAINS`, `IMPORTS`, `CALLS`, `EXTENDS`,
+  `IMPLEMENTS`, `RENDERS`, `USES_HOOK`, `DEPENDS_ON` (DI / JPA / repository →
+  entity), `PRODUCES`/`CONSUMES` (Kafka), `TESTED_BY`.
+- Cung cấp 3 MCP tool:
+  - **`code_explore`** — tìm 1 symbol, trả về vị trí, source, ai gọi nó, nó
+    gọi ai, endpoint/hook/component liên quan.
+  - **`code_impact`** — "nếu sửa cái này thì ảnh hưởng những gì" (blast
+    radius), gom nhóm theo endpoint/component/method/test.
+  - **`code_path`** — tìm đường đi (call/render/hook) giữa 2 symbol, ví dụ từ
+    1 trang React xuống tới REST endpoint / repository method ở backend.
+
+Đây **không phải một npm package đã publish** — bạn chạy nó trực tiếp từ
+source (`dist/cli/index.js`) hoặc `npm link` để có binary `codegraph` trên
+PATH.
+
+---
+
+## 2. Cài đặt & build
+
+```bash
+cd codegraph-mcp
+npm install
+npm run build
+```
+
+Lệnh này build ra `dist/cli/index.js`. Có 2 cách dùng:
+
+**Cách 1 — gọi trực tiếp bằng đường dẫn tuyệt đối** (không cần cài global,
+dùng được từ mọi máy có checkout repo này):
+
+```bash
+node /path/to/codegraph-mcp/dist/cli/index.js <command>
+```
+
+**Cách 2 — `npm link` để có binary `codegraph` toàn cục:**
+
+```bash
+cd codegraph-mcp
+npm run build
+npm link
+```
+
+Sau đó dùng `codegraph <command>` ở bất kỳ project nào.
+
+---
+
+## 3. Dùng CLI trong project đích
+
+Trong project Java/Spring hoặc React/TypeScript mà bạn muốn Claude Code
+"hiểu" cấu trúc code:
+
+```bash
+cd /path/to/your-project
+codegraph init      # sinh file cấu hình .codegraph.yml
+codegraph index      # quét + dựng graph vào .codegraph/graph.db
+codegraph status     # xem số file/node/edge, lần index gần nhất
+```
+
+Re-index chỉ xử lý incremental (theo hash file) nên chạy lại rất nhanh. Nhớ
+thêm `.codegraph/` vào `.gitignore` — graph là artifact cục bộ, không commit.
+
+Các lệnh CLI khác:
+
+| Lệnh | Mô tả |
+|---|---|
+| `codegraph scan` | Đếm số file discover/support/ignore, chưa parse |
+| `codegraph index [--force]` | Parse + dựng lại graph (mặc định incremental) |
+| `codegraph status` | Thống kê graph hiện tại |
+| `codegraph search <symbol>` | Tìm fuzzy theo tên/qualified name |
+| `codegraph explore <symbol> [--no-source]` | Xem context 1 symbol |
+| `codegraph impact <symbol> [--depth n]` | Blast-radius của 1 symbol |
+| `codegraph path <from> <to> [--depth n]` | Đường đi giữa 2 symbol |
+| `codegraph mcp` | Chạy MCP server qua stdio |
+
+### File cấu hình `.codegraph.yml`
+
+```yaml
+project:
+  name: payroll
+
+index:
+  roots: [backend, frontend]   # thư mục cần quét, tương đối gốc project
+  ignore: []
+
+languages:
+  java: { enabled: true }
+  typescript: { enabled: true }
+
+frameworks:
+  spring: { enabled: true }
+  react: { enabled: true }
+
+query:
+  maxDepth: 4
+  maxNodes: 150
+  maxSourceLines: 400
+
+storage:
+  path: .codegraph/graph.db
+
+security:
+  deny: []   # thêm glob pattern không bao giờ được index
+```
+
+`.gitignore` và `.codegraphignore` ở gốc project được tự động tôn trọng,
+cộng thêm danh sách ignore/deny mặc định (`node_modules`, `target`, `build`,
+`dist`, `.git`, `.env*`, `*.pem`, `*.key`...).
+
+---
+
+## 4. Áp dụng vào Claude Code như một MCP server
+
+Đây là cách dùng "chuẩn" nhất — đăng ký làm MCP server để Claude Code tự gọi
+3 tool ở trên khi cần.
+
+### 4.1. Tạo `.mcp.json` ở gốc project đích
+
+```json
+{
+  "mcpServers": {
+    "codegraph": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/path/to/codegraph-mcp/dist/cli/index.js", "mcp"],
+      "env": {
+        "CODEGRAPH_PROJECT_ROOT": "/path/to/your-project"
+      }
+    }
+  }
+}
+```
+
+`.mcp.json` nên được commit vào repo để cả team dùng chung. Dùng đường dẫn
+tuyệt đối tới `codegraph-mcp` vì package chưa publish lên registry. Sau khi
+thêm, restart Claude Code hoặc chạy `/mcp` để kết nối lại.
+
+### 4.2. Tự động re-index bằng hook `SessionStart`
+
+Thêm vào `.claude/settings.json` (commit vào repo) để mỗi phiên Claude Code
+mới tự re-index trước khi làm gì khác:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /path/to/codegraph-mcp/dist/cli/index.js index 2>&1 | tail -5 && echo 'CodeGraph MCP is indexed and available: use code_explore/code_impact/code_path instead of broad grep/glob searches for call graphs, REST endpoint tracing, and blast-radius analysis.'",
+            "timeout": 60000
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Vì index là incremental nên hook này luôn nhanh sau lần chạy đầu. Nếu repo
+lớn, chạy `codegraph index` thủ công 1 lần trước (mục 3) để hook chỉ còn việc
+nhỏ.
+
+---
+
+## 5. Áp dụng vào Skill (Claude Code Skill)
+
+Một **Skill** trong Claude Code là 1 file Markdown (thường ở
+`.claude/skills/<ten-skill>/SKILL.md` trong project, hoặc
+`~/.claude/skills/` cho skill dùng chung mọi project) chứa hướng dẫn mà
+Claude nạp vào khi bạn gọi `/ten-skill`. Skill **không tự có quyền truy cập
+tool mới** — nó chỉ hướng dẫn Claude *cách dùng* các tool đã có sẵn (kể cả
+MCP tool đã đăng ký ở mục 4). Vì vậy điều kiện tiên quyết là project đích đã
+có `.mcp.json` trỏ tới `codegraph mcp` như trên.
+
+Ví dụ tạo skill `.claude/skills/code-graph/SKILL.md`:
+
+```markdown
+---
+name: code-graph
+description: Dùng CodeGraph MCP (code_explore/code_impact/code_path) để tra cứu call graph, REST endpoint, blast-radius thay vì grep. Dùng khi cần hiểu 1 symbol, đánh giá impact trước khi sửa, hoặc lần theo luồng full-stack.
+---
+
+Khi được gọi, thực hiện theo thứ tự:
+
+1. Nếu người dùng chỉ 1 symbol/class/method cụ thể → gọi tool `code_explore`
+   với `query` là tên symbol đó để lấy source, callers, callees, endpoint
+   liên quan.
+2. Nếu người dùng hỏi "sửa cái X có ảnh hưởng gì không" → gọi `code_impact`
+   trên X, tóm tắt các endpoint/component/method/test bị ảnh hưởng.
+3. Nếu người dùng hỏi về 1 luồng full-stack (ví dụ "tạo khoản vay hoạt động
+   thế nào") → gọi `code_path` từ điểm bắt đầu (component/route) tới điểm
+   kết thúc (controller/repository) nghi ngờ liên quan.
+4. Nếu tool trả về "no symbol found", graph có thể đang cũ — chạy
+   `node /path/to/codegraph-mcp/dist/cli/index.js index` rồi thử lại trước
+   khi rơi về grep thường.
+5. Luôn coi kết quả graph là **gợi ý mạnh, không phải chân lý tuyệt đối**
+   (xem mục "Giới hạn" bên dưới) — xác nhận lại bằng source code thật trong
+   `code_explore` trước khi kết luận.
+```
+
+Gọi bằng `/code-graph` trong 1 phiên Claude Code ở project đích, hoặc để
+Claude tự nhận diện khi mô tả trong `description` khớp với yêu cầu người
+dùng.
+
+---
+
+## 6. Áp dụng vào Agent (subagent)
+
+**Subagent** là 1 agent con định nghĩa ở `.claude/agents/<ten-agent>.md`
+(project) hoặc `~/.claude/agents/` (toàn cục), có `system prompt` và danh
+sách `tools` riêng, được gọi qua Agent tool khi task khớp mô tả.
+
+Vì MCP tool của `codegraph` chạy qua `.mcp.json` (cấu hình ở cấp session,
+không cấp agent), subagent kế thừa các MCP tool đã kết nối của phiên chính —
+bạn chỉ cần liệt kê chúng trong front-matter `tools` của agent (hoặc để trống
+để agent có tất cả tool sẵn có).
+
+Ví dụ `.claude/agents/impact-analyst.md`:
+
+```markdown
+---
+name: impact-analyst
+description: Dùng khi cần đánh giá blast-radius của 1 thay đổi (method/service/repository/REST endpoint dùng chung) trước khi sửa code, dựa trên CodeGraph MCP.
+tools: mcp__codegraph__code_explore, mcp__codegraph__code_impact, mcp__codegraph__code_path, Read, Grep
+---
+
+Bạn là chuyên gia phân tích blast-radius cho codebase Java/Spring +
+React/TypeScript này.
+
+Quy trình:
+1. Gọi `code_explore` trên symbol được giao để hiểu vị trí, chữ ký, và
+   callers/callees hiện tại.
+2. Gọi `code_impact` trên cùng symbol để liệt kê toàn bộ endpoint, component,
+   method, test bị ảnh hưởng — nhóm theo loại.
+3. Nếu cần lần theo luồng cụ thể (ví dụ từ React component xuống Spring
+   controller), gọi `code_path`.
+4. Nếu graph báo "no symbol found", ghi rõ trong báo cáo rằng graph có thể
+   đang cũ (cần `codegraph index --force`) thay vì suy luận từ tên gọi.
+5. Trả về báo cáo ngắn gọn: symbol đã đổi, danh sách ảnh hưởng theo nhóm
+   (BE/FE/test), và mức độ tin cậy (dựa trên "Giới hạn" bên dưới — ví dụ DI
+   qua setter, Kafka topic động, Redux/Router phía React đều KHÔNG được
+   model hoá).
+```
+
+Tên tool MCP theo format `mcp__<server-name-trong-mcp.json>__<tool-name>`,
+tức nếu bạn đặt server tên `codegraph` như ví dụ ở mục 4.1 thì 3 tool sẽ là
+`mcp__codegraph__code_explore`, `mcp__codegraph__code_impact`,
+`mcp__codegraph__code_path`.
+
+---
+
+## 7. Áp dụng vào script khác (ngoài Claude Code)
+
+`codegraph-mcp` chưa publish npm package, nên dùng từ script khác theo 2
+cách:
+
+### 7.1. Gọi CLI qua subprocess (đơn giản, khuyến nghị)
+
+```bash
+# Node.js
+node -e "
+const { execFileSync } = require('child_process');
+const out = execFileSync('node', [
+  '/path/to/codegraph-mcp/dist/cli/index.js', 'explore', 'LoanService.disburse'
+], { cwd: '/path/to/your-project', encoding: 'utf8' });
+console.log(out);
+"
+```
+
+```bash
+# hoặc trực tiếp trong bash script
+node /path/to/codegraph-mcp/dist/cli/index.js impact LoanService.disburse --depth 3
+```
+
+Cách này phù hợp cho CI script, pre-commit hook, hoặc agent framework khác
+(không phải Claude Code) muốn gọi ra ngoài như 1 CLI tool thông thường.
+
+### 7.2. Gọi bất kỳ MCP client nào khác
+
+Vì `codegraph mcp` chỉ là 1 MCP server chuẩn chạy qua stdio, **bất kỳ MCP
+client nào** (không riêng Claude Code — ví dụ 1 script tự viết dùng
+`@modelcontextprotocol/sdk` client) đều có thể spawn:
+
+```bash
+node /path/to/codegraph-mcp/dist/cli/index.js mcp
+```
+
+và nói chuyện qua giao thức MCP chuẩn (`tools/list`, `tools/call`).
+
+### 7.3. Import trực tiếp module core (nâng cao, dùng nội bộ)
+
+Nếu script Node.js của bạn nằm trong monorepo và muốn tránh chi phí spawn
+process, có thể import thẳng `AppContext` (không phải API public đã ổn định,
+có thể đổi giữa các version):
+
+```ts
+import { createAppContext } from "codegraph-mcp/dist/core/app-context.js";
+
+const ctx = createAppContext("/path/to/your-project");
+const results = await ctx.queryService.search("LoanService");
+ctx.close();
+```
+
+Cách này **rủi ro hơn** vì không phải API đã công bố ổn định — chỉ dùng khi
+bạn kiểm soát cả 2 phía (script và version của `codegraph-mcp`).
+
+---
+
+## 8. Quy trình SDLC gợi ý (khi dùng qua Claude Code)
+
+```
+Yêu cầu / ticket
+   |
+   v
+code_explore <symbol nêu trong ticket>      # xem implementation hiện tại
+   |
+   v
+code_impact <symbol>                         # blast-radius: BE/FE/endpoint
+   |
+   v
+Viết implementation plan trước khi sửa
+   |
+   v
+Thực hiện thay đổi
+   |
+   v
+code_impact <các symbol đã đổi>              # xác nhận không bỏ sót gì, kể cả test
+   |
+   v
+Chạy các test mà code_impact đã gắn cờ (Java/Spring); phía React vẫn cần
+tìm test theo naming convention (chưa có edge TESTED_BY bên đó)
+```
+
+---
+
+## 9. Giới hạn cần biết (đừng tin graph 100%)
+
+- **Call resolution là best-effort, không phải compiler.** Java: theo type
+  constructor/field, cùng package, rồi fallback "tên duy nhất trong project".
+  TypeScript: cùng file → relative import → fallback tên duy nhất. Lời gọi
+  mơ hồ (nhiều method/function trùng tên) **không** được đoán mà bị bỏ qua —
+  `code_impact`/`code_path` "miss" có thể là do mơ hồ, không phải "không có
+  quan hệ".
+- **Java/Spring — đã model:** constructor injection, `@Autowired` field
+  injection, JPA entity graph, repository → entity linking, Kafka
+  producer/consumer (topic là literal string), test mapping theo naming
+  convention (`XTest`/`XIT` → `X`).
+- **Java/Spring — chưa model:** setter injection, `@Qualifier`, Kafka topic
+  động (biểu thức không phải literal), Feign/WebClient/RestTemplate/Spring
+  Batch/Scheduler/Redis.
+- **React — vẫn chỉ ở mức V1 nhẹ.** Có: component/hook tagging, render tree,
+  hook usage, function call thường. **Chưa có:** React Router (route → page),
+  Redux/Context/state flow, prop-passing, test mapping React (chưa có
+  `TESTED_BY` bên này).
+- **Object-literal export không được parse** (ví dụ `export const api = {
+  get: ... }`) — chỉ index `function`/`class`/`const () => {}` top-level và
+  method trong class.
+- **Staleness khi rename/xoá:** incremental index chỉ re-resolve file vừa
+  parse lại; caller ở file *không đổi* trỏ tới symbol *đã đổi tên* ở file
+  khác có thể bị cũ tới khi chạy `codegraph index --force`.
+
+Không cái nào ở trên phủ nhận giá trị cốt lõi (call graph, REST endpoint,
+DI/JPA/Kafka phía Java, component/hook phía React, blast-radius) — chỉ là
+graph nên được coi là **gợi ý mạnh**, không phải sự thật tuyệt đối. Luôn xác
+nhận lại bằng source code thật (`code_explore`) trước khi kết luận.
+
+---
+
+## 10. Xử lý sự cố (Troubleshooting)
+
+```bash
+# Xem kích thước / độ mới của graph
+codegraph status
+
+# Rebuild toàn bộ (khắc phục staleness sau refactor/rename lớn)
+codegraph index --force
+
+# Kiểm tra 1 symbol có resolve được không
+codegraph search "TenSymbolCanTim"
+```
+
+Nếu `code_explore`/`code_impact`/`code_path` trả về "no symbol found", gần
+như luôn là do query chưa đủ gần với qualified name mà `search` trả ra (ví
+dụ cần `com.example.loan.LoanService.disburse` thay vì chỉ `disburse` nếu có
+nhiều method trùng tên `disburse`).

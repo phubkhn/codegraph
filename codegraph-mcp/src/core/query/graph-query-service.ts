@@ -11,6 +11,7 @@ const FLOW_EDGE_TYPES: EdgeType[] = [
   "PRODUCES",
   "CONSUMES",
   "TESTED_BY",
+  "MAPS_TO_ENDPOINT",
 ];
 
 export interface QueryLimits {
