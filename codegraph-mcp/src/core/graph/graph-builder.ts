@@ -3,6 +3,9 @@ import type { GraphEdge, GraphNode, NodeType, ParsedFile, ParsedSymbol, Resoluti
 import { ProjectIndex } from "./project-index.js";
 import { resolveRelativeImport } from "./import-resolver.js";
 
+/** @Entity classes get retyped to ENTITY by spring-tags, so type-name resolution must still match them. */
+const JAVA_TYPE_NODE_TYPES: NodeType[] = ["CLASS", "INTERFACE", "ENUM", "ENTITY"];
+
 export interface BuildResult {
   nodes: GraphNode[];
   edges: GraphEdge[];
@@ -82,20 +85,28 @@ export function buildGraph(files: ParsedFile[], existingIndex: ProjectIndex): Bu
           if (targetFileNode) edges.push(makeEdge(fileNodeId, targetFileNode.id, "IMPORTS"));
         }
       } else if (imp.importedName) {
-        const targets = index.findByQualifiedName(imp.source).filter((n) => ["CLASS", "INTERFACE", "ENUM"].includes(n.type));
+        const targets = index.findByQualifiedName(imp.source).filter((n) => JAVA_TYPE_NODE_TYPES.includes(n.type));
         if (targets.length === 1) edges.push(makeEdge(fileNodeId, targets[0].id, "IMPORTS"));
       }
     }
   }
 
-  // Pass 4: EXTENDS / IMPLEMENTS.
+  // Pass 4: EXTENDS / IMPLEMENTS / DEPENDS_ON / TESTED_BY (type-name-based relations).
   for (const file of files) {
     for (const rel of file.typeRelations) {
       const fromCandidates = index.findByQualifiedName(rel.fromQualifiedName).filter((n) => n.file === file.path);
       const fromNode = fromCandidates[0];
       if (!fromNode) continue;
       const resolved = resolveJavaTypeSimpleName(rel.targetName, file, index);
-      if (resolved) edges.push(makeEdge(fromNode.id, resolved.node.id, rel.edgeType, { confidence: resolved.confidence }));
+      if (!resolved) continue;
+      const metadata = { confidence: resolved.confidence, ...rel.metadata };
+      // TESTED_BY is declared from the (in-file) test class pointing at its (name-resolved,
+      // usually cross-file) subject, but the edge itself should read Subject -[TESTED_BY]-> Test.
+      if (rel.edgeType === "TESTED_BY") {
+        edges.push(makeEdge(resolved.node.id, fromNode.id, "TESTED_BY", metadata));
+      } else {
+        edges.push(makeEdge(fromNode.id, resolved.node.id, rel.edgeType, metadata));
+      }
     }
   }
 
@@ -184,7 +195,7 @@ function resolveJavaCall(ref: UnresolvedReference, file: ParsedFile, index: Proj
 
   let classNode: GraphNode | undefined;
   if (ref.receiverType) {
-    const exactClass = index.findByQualifiedName(ref.receiverType).find((n) => ["CLASS", "INTERFACE", "ENUM"].includes(n.type));
+    const exactClass = index.findByQualifiedName(ref.receiverType).find((n) => JAVA_TYPE_NODE_TYPES.includes(n.type));
     if (exactClass) {
       classNode = exactClass;
     } else {
@@ -227,13 +238,21 @@ function resolveTsCall(ref: UnresolvedReference, file: ParsedFile, index: Projec
 function resolveJavaTypeSimpleName(simpleName: string, file: ParsedFile, index: ProjectIndex): Resolution | undefined {
   const imp = file.imports.find((i) => i.importedName === simpleName);
   if (imp) {
-    const target = index.findByQualifiedName(imp.source).find((n) => ["CLASS", "INTERFACE", "ENUM"].includes(n.type));
+    const target = index.findByQualifiedName(imp.source).find((n) => JAVA_TYPE_NODE_TYPES.includes(n.type));
     if (target) return { node: target, confidence: "high" };
   }
-  const sameFile = index.findInFile(file.path, simpleName, ["CLASS", "INTERFACE", "ENUM"]);
+  const sameFile = index.findInFile(file.path, simpleName, JAVA_TYPE_NODE_TYPES);
   if (sameFile.length === 1) return { node: sameFile[0], confidence: "high" };
 
-  const global = index.findBySimpleName(simpleName, ["CLASS", "INTERFACE", "ENUM"]);
+  // same package, no explicit import needed in Java
+  if (file.packageName) {
+    const samePackage = index
+      .findByQualifiedName(`${file.packageName}.${simpleName}`)
+      .filter((n) => JAVA_TYPE_NODE_TYPES.includes(n.type));
+    if (samePackage.length === 1) return { node: samePackage[0], confidence: "high" };
+  }
+
+  const global = index.findBySimpleName(simpleName, JAVA_TYPE_NODE_TYPES);
   if (global.length === 1) return { node: global[0], confidence: "medium" };
   return undefined;
 }
@@ -255,7 +274,14 @@ function resolveTsTypeSimpleName(simpleName: string, file: ParsedFile, index: Pr
   return undefined;
 }
 
+/** Node types whose qualifiedName is a globally shared, synthetic identity (REST endpoints, Kafka
+ *  topics) rather than something declared once in exactly one place — their id must stay stable
+ *  across files/re-indexes so producer/consumer or route/handler edges from different files converge
+ *  on the same node instead of creating duplicates. */
+const SHARED_IDENTITY_NODE_TYPES: NodeType[] = ["REST_ENDPOINT", "KAFKA_TOPIC"];
+
 function nodeId(symbol: ParsedSymbol, file: string): string {
+  if (SHARED_IDENTITY_NODE_TYPES.includes(symbol.type)) return `${symbol.type}:${symbol.qualifiedName}`;
   return `${symbol.type}:${symbol.qualifiedName}@${file}:${symbol.startLine}`;
 }
 

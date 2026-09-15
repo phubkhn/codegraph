@@ -38,6 +38,27 @@ function formatSymbolContext(ctx: SymbolContext): string {
   if (ctx.extendsImplements.length > 0) {
     lines.push("", "### Extends / implements", ...ctx.extendsImplements.map((n) => `- ${formatNodeRef(n)}`));
   }
+  if (ctx.dependsOn.length > 0) {
+    lines.push("", "### Depends on (DI / JPA relationship / repository entity)", ...ctx.dependsOn.map((n) => `- ${formatNodeRef(n)}`));
+  }
+  if (ctx.dependedOnBy.length > 0) {
+    lines.push("", "### Depended on by", ...ctx.dependedOnBy.map((n) => `- ${formatNodeRef(n)}`));
+  }
+  if (ctx.produces.length > 0) {
+    lines.push("", "### Produces (Kafka)", ...ctx.produces.map((n) => `- ${formatNodeRef(n)}`));
+  }
+  if (ctx.consumes.length > 0) {
+    lines.push("", "### Consumes (Kafka)", ...ctx.consumes.map((n) => `- ${formatNodeRef(n)}`));
+  }
+  if (ctx.producedBy.length > 0) {
+    lines.push("", "### Produced by (Kafka)", ...ctx.producedBy.map((n) => `- ${formatNodeRef(n)}`));
+  }
+  if (ctx.consumedBy.length > 0) {
+    lines.push("", "### Consumed by (Kafka)", ...ctx.consumedBy.map((n) => `- ${formatNodeRef(n)}`));
+  }
+  if (ctx.tests.length > 0) {
+    lines.push("", "### Tests", ...ctx.tests.map((n) => `- ${formatNodeRef(n)}`));
+  }
 
   if (ctx.source) {
     lines.push("", "### Source", "```", ctx.source, "```");
@@ -58,8 +79,8 @@ export function formatImpactResult(result: ImpactResult): string {
   }
 
   const byType = new Map<string, GraphNode[]>();
-  for (const { node } of result.affected) {
-    const key = groupKey(node);
+  for (const { node, via } of result.affected) {
+    const key = groupKey(node, via.type);
     const arr = byType.get(key) ?? [];
     arr.push(node);
     byType.set(key, arr);
@@ -76,7 +97,19 @@ export function formatImpactResult(result: ImpactResult): string {
   return lines.join("\n");
 }
 
-function groupKey(node: GraphNode): string {
+function groupKey(node: GraphNode, viaEdgeType: string): string {
+  // Edge-type-based grouping takes priority for relationships that cut across node types
+  // (a DEPENDS_ON dependent could be a class, a repository, or an entity alike).
+  switch (viaEdgeType) {
+    case "TESTED_BY":
+      return "tests";
+    case "PRODUCES":
+      return "Kafka producers";
+    case "CONSUMES":
+      return "Kafka consumers";
+    case "DEPENDS_ON":
+      return "dependents (DI / JPA relationship / repository entity)";
+  }
   switch (node.type) {
     case "REST_ENDPOINT":
       return "endpoints";
@@ -84,6 +117,12 @@ function groupKey(node: GraphNode): string {
       return "React components";
     case "REACT_HOOK":
       return "React hooks";
+    case "ENTITY":
+      return "entities";
+    case "KAFKA_TOPIC":
+      return "Kafka topics";
+    case "TEST":
+      return "tests";
     case "CLASS":
     case "INTERFACE":
       return "classes/interfaces";

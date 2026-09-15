@@ -14,6 +14,14 @@ export interface SymbolContext {
   renders: GraphNode[];
   renderedBy: GraphNode[];
   extendsImplements: GraphNode[];
+  dependsOn: GraphNode[];
+  dependedOnBy: GraphNode[];
+  produces: GraphNode[];
+  consumes: GraphNode[];
+  /** for a KAFKA_TOPIC node: which producer methods send to it */
+  producedBy: GraphNode[];
+  /** for a KAFKA_TOPIC node: which @KafkaListener methods consume it */
+  consumedBy: GraphNode[];
   tests: GraphNode[];
 }
 
@@ -53,7 +61,13 @@ export async function buildSymbolContext(
   const renders = outgoing.filter((r) => r.edgeType === "RENDERS").map((r) => r.node);
   const renderedBy = incoming.filter((r) => r.edgeType === "RENDERS").map((r) => r.node);
   const extendsImplements = outgoing.filter((r) => r.edgeType === "EXTENDS" || r.edgeType === "IMPLEMENTS").map((r) => r.node);
-  const tests: GraphNode[] = []; // reserved for a future TESTED_BY edge type
+  const dependsOn = outgoing.filter((r) => r.edgeType === "DEPENDS_ON").map((r) => r.node);
+  const dependedOnBy = incoming.filter((r) => r.edgeType === "DEPENDS_ON").map((r) => r.node);
+  const produces = outgoing.filter((r) => r.edgeType === "PRODUCES").map((r) => r.node);
+  const consumes = outgoing.filter((r) => r.edgeType === "CONSUMES").map((r) => r.node);
+  const producedBy = incoming.filter((r) => r.edgeType === "PRODUCES").map((r) => r.node);
+  const consumedBy = incoming.filter((r) => r.edgeType === "CONSUMES").map((r) => r.node);
+  const tests = incoming.filter((r) => r.edgeType === "TESTED_BY").map((r) => r.node);
 
   let source: string | undefined;
   let truncatedSource = false;
@@ -74,6 +88,12 @@ export async function buildSymbolContext(
     renders,
     renderedBy,
     extendsImplements,
+    dependsOn,
+    dependedOnBy,
+    produces,
+    consumes,
+    producedBy,
+    consumedBy,
     tests,
   };
 }

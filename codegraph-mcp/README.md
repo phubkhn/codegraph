@@ -7,11 +7,17 @@ hooks/renders), stores it in a local SQLite file (`.codegraph/graph.db`), and
 exposes three MCP tools so an AI coding agent (Claude Code) can query it
 instead of grepping the repo.
 
-This is the V1 scope described in `codegraph-mcp-implementation-plan.md`:
-Milestones 1-3 (foundation, generic graph, MCP) plus lightweight Spring/React
-tagging. It intentionally does **not** implement full DI resolution, JPA
-entity graphs, Kafka, React Router/Redux tracing, or test mapping — see
-[Known limitations](docs/claude-code-integration.md#known-limitations-v1).
+This follows `codegraph-mcp-implementation-plan.md`: Milestones 1-3
+(foundation, generic graph, MCP) are done, and **Phase 2 (Java/Spring depth)**
+is done — constructor + `@Autowired` field injection, JPA entity graph
+(`@Entity` + `@OneToOne/@OneToMany/@ManyToOne/@ManyToMany`), repository
+generic-entity linking, Kafka producer/consumer graph, and best-effort test
+mapping (`@Test`/`@SpringBootTest`/... class → subject class by naming
+convention). **Phase 3 (React depth — Router, Redux/state, deeper hook/prop
+tracing, React test mapping)** is not started yet; React support today is the
+lightweight component/hook/render tagging from the original V1 scope. See
+[Known limitations](docs/claude-code-integration.md#known-limitations) for
+exactly what's modeled vs not, on both sides.
 
 ## Quick start
 
@@ -91,12 +97,20 @@ automatically, on top of the built-in ignore/deny lists (`node_modules`,
 ## Graph model
 
 - **Node types**: `FILE`, `CLASS`, `INTERFACE`, `ENUM`, `FUNCTION`, `METHOD`,
-  `VARIABLE`, `REST_ENDPOINT`, `REACT_COMPONENT`, `REACT_HOOK`.
+  `VARIABLE`, `REST_ENDPOINT`, `REACT_COMPONENT`, `REACT_HOOK`, `ENTITY`,
+  `KAFKA_TOPIC`, `TEST`.
 - **Edge types**: `CONTAINS`, `IMPORTS`, `CALLS`, `EXTENDS`, `IMPLEMENTS`,
-  `RENDERS`, `USES_HOOK`.
+  `RENDERS`, `USES_HOOK`, `DEPENDS_ON` (DI / JPA relationship / repository
+  entity), `PRODUCES` / `CONSUMES` (Kafka), `TESTED_BY`.
 - Spring/React specifics live in node `metadata` (e.g.
-  `springComponentType`, `httpMethod`, `path`, `framework`), not as new core
-  concepts — the core graph stays framework-agnostic.
+  `springComponentType`, `httpMethod`, `path`, `framework`,
+  `repositoryEntity`, `relationshipType`), not as new core concepts — the
+  core graph stays framework-agnostic; `*-tags.ts` per language is the only
+  place that knows about Spring/React annotations and conventions.
+- `REST_ENDPOINT` and `KAFKA_TOPIC` nodes use a stable, qualifiedName-only id
+  (not file/line-based) so a route/topic referenced from multiple files
+  (e.g. a Kafka producer in one file and a `@KafkaListener` consumer in
+  another) converges on one shared node instead of duplicating it.
 
 ## MCP tools
 

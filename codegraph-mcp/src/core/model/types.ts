@@ -9,7 +9,10 @@ export type NodeType =
   | "VARIABLE"
   | "REST_ENDPOINT"
   | "REACT_COMPONENT"
-  | "REACT_HOOK";
+  | "REACT_HOOK"
+  | "ENTITY"
+  | "KAFKA_TOPIC"
+  | "TEST";
 
 export type EdgeType =
   | "CONTAINS"
@@ -18,7 +21,11 @@ export type EdgeType =
   | "EXTENDS"
   | "IMPLEMENTS"
   | "RENDERS"
-  | "USES_HOOK";
+  | "USES_HOOK"
+  | "DEPENDS_ON"
+  | "PRODUCES"
+  | "CONSUMES"
+  | "TESTED_BY";
 
 export type ResolutionConfidence = "high" | "medium" | "low";
 
@@ -56,6 +63,8 @@ export interface UnresolvedReference {
   kind: "call" | "jsx" | "hook";
   edgeType: EdgeType;
   line?: number;
+  /** first argument's literal string value, if the call site passes one (e.g. kafkaTemplate.send("topic", ...)) */
+  firstStringArg?: string;
 }
 
 export interface ParsedSymbol {
@@ -85,11 +94,16 @@ export interface ParsedFile {
   symbols: ParsedSymbol[];
   imports: ParsedImport[];
   references: UnresolvedReference[];
-  /** EXTENDS/IMPLEMENTS style relations resolved by simple type name, resolved later against the index */
+  /**
+   * Type-name-based relations resolved later against the whole-project index:
+   * EXTENDS/IMPLEMENTS from class headers, DEPENDS_ON from constructor params /
+   * @Autowired fields / JPA relationship fields / repository generic entity args.
+   */
   typeRelations: Array<{
     fromQualifiedName: string;
     targetName: string;
-    edgeType: "EXTENDS" | "IMPLEMENTS";
+    edgeType: "EXTENDS" | "IMPLEMENTS" | "DEPENDS_ON" | "TESTED_BY";
+    metadata?: Record<string, unknown>;
   }>;
   parseError?: string;
 }

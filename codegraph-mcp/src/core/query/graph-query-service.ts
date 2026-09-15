@@ -1,7 +1,17 @@
 import type { SqliteGraphStore } from "../storage/sqlite-store.js";
 import type { EdgeType, GraphEdge, GraphNode } from "../model/types.js";
 
-const FLOW_EDGE_TYPES: EdgeType[] = ["CALLS", "EXTENDS", "IMPLEMENTS", "RENDERS", "USES_HOOK"];
+const FLOW_EDGE_TYPES: EdgeType[] = [
+  "CALLS",
+  "EXTENDS",
+  "IMPLEMENTS",
+  "RENDERS",
+  "USES_HOOK",
+  "DEPENDS_ON",
+  "PRODUCES",
+  "CONSUMES",
+  "TESTED_BY",
+];
 
 export interface QueryLimits {
   maxDepth: number;

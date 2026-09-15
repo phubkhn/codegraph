@@ -129,10 +129,12 @@ tools. Prefer them over broad grep/glob searches for anything relational:
   falling back to grep.
 ```
 
-This mirrors the Impact Analysis / Implementation / Review workflow from
-`codegraph-mcp-implementation-plan.md` §11-13, minus test-selection (see
-limitations below — there's no `TESTED_BY` edge in this V1, so ask Claude to
-locate tests by naming convention near affected files instead).
+This mirrors the Impact Analysis / Implementation / Review / Test Selection
+workflow from `codegraph-mcp-implementation-plan.md` §11-14. Test selection
+now has real signal on the Java/Spring side: `code_impact` groups affected
+`TEST` nodes (matched to their subject class by naming convention, e.g.
+`LoanServiceTest` → `LoanService`) directly in its output — see §7 below for
+what's modeled and what's still naming-convention-only.
 
 ## 6. Suggested SDLC workflow
 
@@ -152,32 +154,47 @@ Implementation plan (write this out before editing)
 Implement the change
    |
    v
-code_impact <changed symbols>                   # confirm nothing was missed
+code_impact <changed symbols>                   # confirm nothing was missed, incl. affected tests
    |
    v
-Manually locate + run tests near affected files (no TESTED_BY edge in V1)
+Run the tests code_impact flagged as affected (Java/Spring side); for
+React, still locate tests near affected files by naming convention (no
+TESTED_BY edge on that side yet)
 ```
 
-## Known limitations (V1)
+## 7. Known limitations
 
-CodeGraph MCP V1 deliberately does **not** implement the full plan — see
+CodeGraph MCP has done Milestones 1-3 plus **Phase 2 (Java/Spring depth)**
+in full; **Phase 3 (React depth)** hasn't started — see
 `codegraph-mcp-implementation-plan.md` for the complete roadmap. Calibrate
 trust in the graph accordingly:
 
 - **Call resolution is best-effort, not a compiler.** Java: constructor/field
-  type-based resolution plus a "unique name in project" fallback. TypeScript:
-  same-file, then relative-import resolution, then a unique-name fallback.
-  Ambiguous calls (multiple same-named methods/functions in the project) are
-  silently **not** wired into an edge rather than guessed — a `code_impact`
-  or `code_path` miss can mean "ambiguous", not "no relationship."
-- **No JPA entity graph, no Kafka producer/consumer graph, no Spring `@Autowired`
-  field/setter injection** (only constructor-injection-style field types are
-  used for call resolution) — Repository/Entity/Kafka relationships are not
-  modeled.
-- **No React Router / Redux / state-management graph.** Route → page and
-  `useSelector`/`dispatch` flows aren't modeled; only component render tree
-  (`RENDERS`), hook usage (`USES_HOOK`), and plain function calls (`CALLS`).
-- **No `TESTED_BY` edges** — tests aren't linked to the code they cover.
+  type-based resolution, same-package resolution, plus a "unique name in
+  project" fallback. TypeScript: same-file, then relative-import resolution,
+  then a unique-name fallback. Ambiguous calls (multiple same-named
+  methods/functions in the project) are silently **not** wired into an edge
+  rather than guessed — a `code_impact` or `code_path` miss can mean
+  "ambiguous", not "no relationship."
+- **Java/Spring — modeled (Phase 2 done):** constructor injection,
+  `@Autowired` field injection, JPA entity graph (`@Entity` +
+  `@OneToOne`/`@OneToMany`/`@ManyToOne`/`@ManyToMany`, collection element
+  type via generics), repository → entity linking (`JpaRepository<Entity,
+  Id>`), Kafka producer (`KafkaTemplate.send("topic", ...)` with a literal
+  topic string) / consumer (`@KafkaListener`) graph converging on one shared
+  topic node, and best-effort test mapping (`@Test`/`@SpringBootTest`/
+  `@WebMvcTest`/`@DataJpaTest` class → subject class by `XTest`/`XIT` naming
+  convention).
+- **Java/Spring — still not modeled:** setter injection (only constructor
+  params + `@Autowired` fields), `@Qualifier`-based disambiguation, dynamic
+  Kafka topic expressions (non-literal `.send(...)` args are skipped, not
+  guessed), Feign/WebClient/RestTemplate/Spring Batch/Scheduler/Redis.
+- **React — still lightweight V1 only (Phase 3 not started).** Component/hook
+  tagging, render tree (`RENDERS`), hook usage (`USES_HOOK`), and plain
+  function calls (`CALLS`) are modeled. **Not modeled:** React Router (route
+  → page), Redux/Context/state-management flows (`useSelector`/`dispatch`),
+  prop-passing relationships, and React test mapping (no `TESTED_BY` on this
+  side yet — locate tests by naming convention instead).
 - **Object-literal exports aren't parsed** (e.g. `export const api = { get:
   ... }`) — only top-level `function`/`class`/`const () => {}` declarations
   and class methods are indexed. A common `api.get(...)` client pattern will
@@ -186,12 +203,15 @@ trust in the graph accordingly:
 - **Cross-file staleness on rename/delete**: incremental indexing only
   re-resolves the files it re-parses; a caller in an *unchanged* file that
   used to point at a since-renamed symbol in a *changed* file can go stale
-  until `codegraph index --force`.
+  until `codegraph index --force`. A Kafka topic/REST endpoint node's
+  displayed `file`/`line` reflects whichever file was indexed most recently
+  among the files that reference it — cosmetic only, doesn't affect edges.
 
-None of this blocks the core value (call graphs, REST endpoint tracing,
-React component/hook tracing, blast-radius analysis) — it just means the
-graph is a strong hint, not ground truth. Always verify with `code_explore`'s
-source output before assuming a wiring is complete.
+None of this blocks the core value (call graphs, REST endpoint tracing, DI/
+JPA/Kafka graphs on the Java side, React component/hook tracing, blast-radius
+analysis) — it just means the graph is a strong hint, not ground truth.
+Always verify with `code_explore`'s source output before assuming a wiring
+is complete.
 
 ## Troubleshooting
 

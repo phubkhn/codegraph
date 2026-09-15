@@ -2,7 +2,17 @@ import type { Node } from "web-tree-sitter";
 import { createParser } from "../../core/parser/tree-sitter-runtime.js";
 import type { LanguageParser } from "../../core/parser/language-parser.js";
 import type { ParsedFile, ParsedImport, ParsedSymbol, UnresolvedReference } from "../../core/model/types.js";
-import { childrenByType, endLineOf, firstChildByType, lineOf, simpleTypeName, textOf } from "../../core/parser/ts-node-utils.js";
+import {
+  childrenByType,
+  endLineOf,
+  firstChildByType,
+  genericTypeArgs,
+  lineOf,
+  simpleTypeName,
+  textOf,
+} from "../../core/parser/ts-node-utils.js";
+
+const REPOSITORY_BASE_TYPES = ["JpaRepository", "CrudRepository", "PagingAndSortingRepository", "ListCrudRepository"];
 
 export interface AnnotationInfo {
   name: string;
@@ -88,7 +98,7 @@ function walkTypeDeclaration(
   const nodeType = node.type === "interface_declaration" ? "INTERFACE" : node.type === "enum_declaration" ? "ENUM" : "CLASS";
   const annotations = extractAnnotations(node, source);
 
-  symbols.push({
+  const typeSymbol: ParsedSymbol = {
     type: nodeType,
     name: simpleName,
     qualifiedName,
@@ -96,7 +106,8 @@ function walkTypeDeclaration(
     endLine: endLineOf(node),
     parentQualifiedName,
     metadata: { language: "java", annotations, modifiers: extractModifierKeywords(node, source) },
-  });
+  };
+  symbols.push(typeSymbol);
 
   const superclass = node.childForFieldName("superclass");
   if (superclass) {
@@ -116,12 +127,31 @@ function walkTypeDeclaration(
 
   // interface extends interface(s), e.g. `interface LoanRepository extends JpaRepository<Loan, Long>`
   const extendsInterfaces = firstChildByType(node, "extends_interfaces");
+  let repositoryEntity: string | undefined;
   if (extendsInterfaces) {
     const typeList = firstChildByType(extendsInterfaces, "type_list") ?? extendsInterfaces;
     for (const t of typeList.namedChildren) {
+      if (!t) continue;
       const targetName = simpleTypeName(t, source);
-      if (targetName) typeRelations.push({ fromQualifiedName: qualifiedName, targetName, edgeType: "EXTENDS" });
+      if (!targetName) continue;
+      typeRelations.push({ fromQualifiedName: qualifiedName, targetName, edgeType: "EXTENDS" });
+
+      if (REPOSITORY_BASE_TYPES.includes(targetName)) {
+        const [entityArg] = genericTypeArgs(t, source);
+        if (entityArg) {
+          repositoryEntity = entityArg;
+          typeRelations.push({
+            fromQualifiedName: qualifiedName,
+            targetName: entityArg,
+            edgeType: "DEPENDS_ON",
+            metadata: { via: "repository-entity" },
+          });
+        }
+      }
     }
+  }
+  if (repositoryEntity) {
+    typeSymbol.metadata = { ...typeSymbol.metadata, repositoryEntity };
   }
 
   const body = node.childForFieldName("body");
@@ -134,19 +164,32 @@ function walkTypeDeclaration(
       continue;
     }
     if (member.type === "field_declaration") {
-      handleFieldDeclaration(member, source, qualifiedName, symbols);
+      handleFieldDeclaration(member, source, qualifiedName, symbols, typeRelations);
       continue;
     }
     if (member.type === "method_declaration" || member.type === "constructor_declaration") {
-      handleMethodDeclaration(member, source, qualifiedName, symbols, references);
+      handleMethodDeclaration(member, source, qualifiedName, symbols, references, typeRelations);
       continue;
     }
   }
 }
 
-function handleFieldDeclaration(node: Node, source: string, classQualifiedName: string, symbols: ParsedSymbol[]): void {
+const JPA_RELATIONSHIP_ANNOTATIONS = ["OneToOne", "OneToMany", "ManyToOne", "ManyToMany"];
+const COLLECTION_TYPES = ["List", "Set", "Collection", "Iterable"];
+
+function handleFieldDeclaration(
+  node: Node,
+  source: string,
+  classQualifiedName: string,
+  symbols: ParsedSymbol[],
+  typeRelations: ParsedFile["typeRelations"],
+): void {
   const typeNode = node.childForFieldName("type");
   const declaredType = simpleTypeName(typeNode, source);
+  const genericArg = genericTypeArgs(typeNode, source)[0];
+  const annotations = extractAnnotations(node, source);
+  const annotationNames = annotations.map((a) => a.name);
+
   for (const declarator of childrenByType(node, "variable_declarator")) {
     const nameNode = declarator.childForFieldName("name");
     if (!nameNode) continue;
@@ -158,8 +201,31 @@ function handleFieldDeclaration(node: Node, source: string, classQualifiedName: 
       startLine: lineOf(node),
       endLine: endLineOf(node),
       parentQualifiedName: classQualifiedName,
-      metadata: { language: "java", declaredType, kind: "field" },
+      metadata: { language: "java", declaredType, genericArg, kind: "field", annotations },
     });
+  }
+
+  if (annotationNames.includes("Autowired") && declaredType) {
+    typeRelations.push({
+      fromQualifiedName: classQualifiedName,
+      targetName: declaredType,
+      edgeType: "DEPENDS_ON",
+      metadata: { via: "field-injection" },
+    });
+  }
+
+  const relationshipAnnotation = annotations.find((a) => JPA_RELATIONSHIP_ANNOTATIONS.includes(a.name));
+  if (relationshipAnnotation) {
+    const isCollection = declaredType ? COLLECTION_TYPES.includes(declaredType) : false;
+    const targetName = isCollection ? genericArg : declaredType;
+    if (targetName) {
+      typeRelations.push({
+        fromQualifiedName: classQualifiedName,
+        targetName,
+        edgeType: "DEPENDS_ON",
+        metadata: { via: "jpa-relationship", relationshipType: relationshipAnnotation.name },
+      });
+    }
   }
 }
 
@@ -169,12 +235,14 @@ function handleMethodDeclaration(
   classQualifiedName: string,
   symbols: ParsedSymbol[],
   references: UnresolvedReference[],
+  typeRelations: ParsedFile["typeRelations"],
 ): void {
   const nameNode = node.childForFieldName("name");
   if (!nameNode) return;
   const methodName = textOf(nameNode, source);
   const methodQualifiedName = `${classQualifiedName}.${methodName}`;
   const annotations = extractAnnotations(node, source);
+  const isConstructor = node.type === "constructor_declaration";
 
   symbols.push({
     type: "METHOD",
@@ -183,7 +251,7 @@ function handleMethodDeclaration(
     startLine: lineOf(node),
     endLine: endLineOf(node),
     parentQualifiedName: classQualifiedName,
-    metadata: { language: "java", annotations, modifiers: extractModifierKeywords(node, source) },
+    metadata: { language: "java", annotations, modifiers: extractModifierKeywords(node, source), isConstructor },
   });
 
   // local scope: parameter/local-var name -> declared type simple name
@@ -194,6 +262,14 @@ function handleMethodDeclaration(
       const pType = simpleTypeName(p.childForFieldName("type"), source);
       const pNameNode = p.childForFieldName("name");
       if (pType && pNameNode) localTypes.set(textOf(pNameNode, source), pType);
+      if (isConstructor && pType) {
+        typeRelations.push({
+          fromQualifiedName: classQualifiedName,
+          targetName: pType,
+          edgeType: "DEPENDS_ON",
+          metadata: { via: "constructor-injection" },
+        });
+      }
     }
   }
 
@@ -234,6 +310,10 @@ function handleMethodDeclaration(
       rawName = calledMethod;
     }
 
+    const argsList = invocation.childForFieldName("arguments");
+    const firstArg = argsList?.namedChild(0);
+    const firstStringArg = firstArg?.type === "string_literal" ? stripQuotes(textOf(firstArg, source)) : undefined;
+
     references.push({
       fromQualifiedName: methodQualifiedName,
       rawName,
@@ -241,6 +321,7 @@ function handleMethodDeclaration(
       kind: "call",
       edgeType: "CALLS",
       line: lineOf(invocation),
+      firstStringArg,
     });
   }
 }

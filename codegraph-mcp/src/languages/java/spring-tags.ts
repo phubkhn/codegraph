@@ -19,6 +19,9 @@ const MAPPING_ANNOTATIONS: Record<string, string | undefined> = {
   RequestMapping: undefined,
 };
 
+const TEST_CLASS_ANNOTATIONS = ["SpringBootTest", "WebMvcTest", "DataJpaTest"];
+const TEST_SUFFIX_RE = /(Test|IT)$/;
+
 /**
  * Enriches a parsed Java file in place with Spring semantics: component type
  * tags on classes, and synthetic REST_ENDPOINT symbols + resolved references
@@ -32,9 +35,31 @@ export function applySpringTags(file: ParsedFile): void {
 
   for (const cls of classes) {
     const annotations = (cls.metadata?.annotations as AnnotationInfo[] | undefined) ?? [];
+    const annotationNames = annotations.map((a) => a.name);
     const componentType = annotations.map((a) => COMPONENT_ANNOTATIONS[a.name]).find(Boolean);
     if (componentType) {
       cls.metadata = { ...cls.metadata, framework: "spring", springComponentType: componentType };
+    }
+
+    if (annotationNames.includes("Entity")) {
+      cls.type = "ENTITY";
+      cls.metadata = { ...cls.metadata, framework: "spring", jpaEntity: true };
+    }
+
+    const isTestClass =
+      annotationNames.some((n) => TEST_CLASS_ANNOTATIONS.includes(n)) ||
+      (TEST_SUFFIX_RE.test(cls.name) && methods.some((m) => m.parentQualifiedName === cls.qualifiedName && hasAnnotation(m, "Test")));
+    if (isTestClass) {
+      cls.type = "TEST";
+      cls.metadata = { ...cls.metadata, framework: "spring", testFramework: "junit" };
+      const subjectName = cls.name.replace(TEST_SUFFIX_RE, "");
+      if (subjectName && subjectName !== cls.name) {
+        file.typeRelations.push({
+          fromQualifiedName: cls.qualifiedName,
+          targetName: subjectName,
+          edgeType: "TESTED_BY",
+        });
+      }
     }
 
     const isRepository =
@@ -81,7 +106,72 @@ export function applySpringTags(file: ParsedFile): void {
     }
   }
 
+  applyKafkaTags(file, methods, extraSymbols);
+
   file.symbols.push(...extraSymbols);
+}
+
+function hasAnnotation(symbol: ParsedSymbol, name: string): boolean {
+  const annotations = (symbol.metadata?.annotations as AnnotationInfo[] | undefined) ?? [];
+  return annotations.some((a) => a.name === name);
+}
+
+/**
+ * Kafka producer/consumer detection. Producers are found by scanning already-collected
+ * CALLS references for the `kafkaTemplate.send("topic", ...)` shape (java-parser captures
+ * `firstStringArg` generically for any call, with no Kafka-specific knowledge); consumers are
+ * found via @KafkaListener method annotations. Both sides resolve to the same synthetic
+ * KAFKA_TOPIC node id (qualifiedName-only, no file/line) so producer and consumer edges in
+ * different files converge on one topic node instead of creating duplicates.
+ */
+function applyKafkaTags(file: ParsedFile, methods: ParsedSymbol[], extraSymbols: ParsedSymbol[]): void {
+  const seenTopics = new Set<string>();
+  const ensureTopic = (topic: string, resolution?: "partial") => {
+    const qualifiedName = `KAFKA_TOPIC:${topic}`;
+    if (!seenTopics.has(topic)) {
+      seenTopics.add(topic);
+      extraSymbols.push({
+        type: "KAFKA_TOPIC",
+        name: topic,
+        qualifiedName,
+        startLine: 1,
+        endLine: 1,
+        parentQualifiedName: file.path,
+        metadata: { framework: "spring", topic, ...(resolution ? { resolution } : {}) },
+      });
+    }
+    return qualifiedName;
+  };
+
+  for (const ref of file.references) {
+    if (ref.edgeType !== "CALLS" || ref.receiverType !== "KafkaTemplate" || !ref.rawName.endsWith(".send")) continue;
+    if (!ref.firstStringArg) continue; // dynamic topic expression - can't resolve statically in V1
+    const topicQualifiedName = ensureTopic(ref.firstStringArg);
+    file.references.push({
+      fromQualifiedName: ref.fromQualifiedName,
+      rawName: topicQualifiedName,
+      kind: "call",
+      edgeType: "PRODUCES",
+      line: ref.line,
+    });
+  }
+
+  for (const method of methods) {
+    const listenerAnn = ((method.metadata?.annotations as AnnotationInfo[] | undefined) ?? []).find(
+      (a) => a.name === "KafkaListener",
+    );
+    if (!listenerAnn) continue;
+    const topic = listenerAnn.pairs?.topics ?? listenerAnn.stringArg;
+    if (!topic) continue;
+    const topicQualifiedName = ensureTopic(topic);
+    file.references.push({
+      fromQualifiedName: method.qualifiedName,
+      rawName: topicQualifiedName,
+      kind: "call",
+      edgeType: "CONSUMES",
+      line: method.startLine,
+    });
+  }
 }
 
 function mappingPath(ann: AnnotationInfo): string {

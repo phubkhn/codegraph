@@ -34,6 +34,17 @@ export function simpleTypeName(typeNode: Node | null | undefined, source: string
   }
 }
 
+/** Simple names of a generic type's arguments, e.g. JpaRepository<Loan, Long> -> ["Loan", "Long"]; [] if not generic. */
+export function genericTypeArgs(typeNode: Node | null | undefined, source: string): string[] {
+  if (!typeNode || typeNode.type !== "generic_type") return [];
+  const argsList = firstChildByType(typeNode, "type_arguments");
+  if (!argsList) return [];
+  return argsList.namedChildren
+    .filter((c): c is Node => !!c)
+    .map((c) => simpleTypeName(c, source))
+    .filter((n): n is string => !!n);
+}
+
 export function lineOf(node: Node): number {
   return node.startPosition.row + 1;
 }
