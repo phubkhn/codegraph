@@ -19,10 +19,25 @@ vào Skill / Agent / script khác**.
 - Quét code Java/Spring và React/TypeScript, dựng graph các node:
   `FILE`, `CLASS`, `INTERFACE`, `ENUM`, `FUNCTION`, `METHOD`, `VARIABLE`,
   `REST_ENDPOINT`, `REACT_COMPONENT`, `REACT_HOOK`, `ENTITY`, `KAFKA_TOPIC`,
-  `TEST`.
+  `TEST`, `ROUTE` (react-router), `CONFIG_PROPERTY` (key trong
+  `application.yml`/`.properties`).
 - Và các quan hệ (edge): `CONTAINS`, `IMPORTS`, `CALLS`, `EXTENDS`,
   `IMPLEMENTS`, `RENDERS`, `USES_HOOK`, `DEPENDS_ON` (DI / JPA / repository →
-  entity), `PRODUCES`/`CONSUMES` (Kafka), `TESTED_BY`.
+  entity / Spring config binding), `PRODUCES`/`CONSUMES` (Kafka), `TESTED_BY`,
+  `MAPS_TO_ENDPOINT` (frontend gọi API → backend `REST_ENDPOINT`).
+- Ngoài các quan hệ cơ bản, phía Java/Spring còn có:
+  - **Lombok**: các method/field mà Lombok sinh ra lúc compile
+    (`@Data`/`@Value`/`@Getter`/`@Setter`/`@Builder`/`@SuperBuilder`/
+    `@ToString`/`@EqualsAndHashCode`/`@Slf4j` và các `@Log*` khác) được tổng
+    hợp thành node thật trong graph — gọi `employee.getFirstName()` dù
+    `getFirstName()` không có trong source vẫn resolve đúng, thay vì "biến
+    mất" khỏi call graph. Member nào code đã viết tay thì Lombok không bao
+    giờ ghi đè.
+  - **Spring config binding**: field có `@Value("${key}")` hoặc class có
+    `@ConfigurationProperties(prefix = "x")` được nối tới đúng key trong
+    `application*.properties`/`.yml`/`.yaml` (hoặc `bootstrap*...`), kể cả
+    khi cách viết key khác nhau (`pool-size` trong YAML và `poolSize` trong
+    Java vẫn hội tụ về cùng 1 node).
 - Cung cấp 3 MCP tool:
   - **`code_explore`** — tìm 1 symbol, trả về vị trí, source, ai gọi nó, nó
     gọi ai, endpoint/hook/component liên quan.
@@ -328,8 +343,8 @@ Quy trình:
    đang cũ (cần `codegraph index --force`) thay vì suy luận từ tên gọi.
 5. Trả về báo cáo ngắn gọn: symbol đã đổi, danh sách ảnh hưởng theo nhóm
    (BE/FE/test), và mức độ tin cậy (dựa trên "Giới hạn" bên dưới — ví dụ DI
-   qua setter, Kafka topic động, Redux/Router phía React đều KHÔNG được
-   model hoá).
+   qua setter, Kafka topic động, hay Redux/Context phía React đều KHÔNG được
+   model hoá; react-router thì ĐÃ có).
 ```
 
 Tên tool MCP theo format `mcp__<server-name-trong-mcp.json>__<tool-name>`,
@@ -417,8 +432,10 @@ Thực hiện thay đổi
 code_impact <các symbol đã đổi>              # xác nhận không bỏ sót gì, kể cả test
    |
    v
-Chạy các test mà code_impact đã gắn cờ (Java/Spring); phía React vẫn cần
-tìm test theo naming convention (chưa có edge TESTED_BY bên đó)
+Chạy các test mà code_impact đã gắn cờ — cả 2 phía đều có TESTED_BY:
+Java/Spring qua class `@Test`/`@SpringBootTest`/... (naming convention
+`XTest`/`XIT` → `X`), React qua file `X.test.tsx` → `X` (test theo file vì
+JS test là block `describe`/`it`, không phải class)
 ```
 
 ---
@@ -426,28 +443,65 @@ tìm test theo naming convention (chưa có edge TESTED_BY bên đó)
 ## 10. Giới hạn cần biết (đừng tin graph 100%)
 
 - **Call resolution là best-effort, không phải compiler.** Java: theo type
-  constructor/field, cùng package, rồi fallback "tên duy nhất trong project".
-  TypeScript: cùng file → relative import → fallback tên duy nhất. Lời gọi
-  mơ hồ (nhiều method/function trùng tên) **không** được đoán mà bị bỏ qua —
-  `code_impact`/`code_path` "miss" có thể là do mơ hồ, không phải "không có
-  quan hệ".
+  constructor/field, cùng package, rồi fallback "tên duy nhất trong project"
+  — nhưng fallback này **chỉ áp dụng cho lời gọi không có receiver rõ ràng**.
+  Một lời gọi có receiver (`obj.method()`) mà receiver đó không resolve được
+  về class nào trong project (thư viện ngoài, ví dụ `Objects.equals(...)`,
+  `someBean.libMethod()`) thì bị để **unresolved**, không rơi xuống fallback
+  đoán theo tên nữa — trước đây phần này có bug khiến nó đoán bừa sang 1
+  method trùng tên không liên quan, có trường hợp thật (phát hiện khi
+  dogfooding trên repo Spring thật) là **method tự trỏ vào chính nó**. Đã
+  fix. TypeScript cũng áp dụng cùng logic: cùng file → relative import →
+  fallback tên duy nhất, với cùng guard chặn receiver-ngoài-project. Lời gọi
+  mơ hồ **không có receiver** (nhiều method/function trùng tên) vẫn **không**
+  được đoán mà bị bỏ qua như cũ — `code_impact`/`code_path` "miss" có thể là
+  do mơ hồ hoặc do gọi vào thư viện ngoài, không phải "không có quan hệ".
 - **Java/Spring — đã model:** constructor injection, `@Autowired` field
   injection, JPA entity graph, repository → entity linking, Kafka
   producer/consumer (topic là literal string), test mapping theo naming
-  convention (`XTest`/`XIT` → `X`).
+  convention (`XTest`/`XIT` → `X`), **Lombok** (`@Data`/`@Value`/`@Getter`/
+  `@Setter`/`@Builder`/`@SuperBuilder`/`@ToString`/`@EqualsAndHashCode`/
+  `@Slf4j` và các `@Log*` khác — method/field Lombok sinh ra được tổng hợp
+  thành node thật, member nào code viết tay rồi thì không bao giờ bị ghi đè),
+  và **Spring config binding** (`@Value("${key}")` /
+  `@ConfigurationProperties(prefix=...)` nối tới đúng key trong
+  `application*`/`bootstrap*` `.properties`/`.yml`/`.yaml`, kể cả khi cách
+  viết key khác nhau giữa YAML kebab-case và Java camelCase).
 - **Java/Spring — chưa model:** setter injection, `@Qualifier`, Kafka topic
   động (biểu thức không phải literal), Feign/WebClient/RestTemplate/Spring
-  Batch/Scheduler/Redis.
-- **React — vẫn chỉ ở mức V1 nhẹ.** Có: component/hook tagging, render tree,
-  hook usage, function call thường. **Chưa có:** React Router (route → page),
-  Redux/Context/state flow, prop-passing, test mapping React (chưa có
-  `TESTED_BY` bên này).
+  Batch/Scheduler/Redis, Spring application event
+  (`publishEvent`/`@EventListener`).
+- **React — đã model (không chỉ function component):** component/hook
+  tagging, render tree (`RENDERS`, có `metadata.props` là tên prop) cho cả
+  function component **và** `class X extends React.Component`/
+  `PureComponent` — cạnh render của class component được ghi ở cả trên chính
+  class (để tra theo tên vẫn ra) lẫn trên method `render` của nó (để
+  `code_path` đi tiếp được qua nhiều lớp class component lồng nhau); JSX
+  viết trong file `.js`/`.jsx` thường (không chỉ `.tsx`) giờ parse đúng —
+  trước đây JSX trong file `.js` không được nhận diện, mất hết
+  RENDERS/USES_HOOK ở những file đó. Ngoài ra có hook usage (`USES_HOOK`),
+  function call thường (`CALLS`), react-router (`<Route>` JSX lẫn
+  `createBrowserRouter([{path,element}])`) mapping vào node `ROUTE`, frontend
+  API-client detection (`fetch`/`axios`/wrapper tuỳ ý) **join thẳng vào
+  cùng 1 node** với `REST_ENDPOINT` bên Spring khi cả 2 phía đều được index,
+  và test mapping theo tên file (`X.test.tsx` → `X`).
+- **React — chưa model:** Redux/Context/state-management flow
+  (`useSelector`/`dispatch`), prop-passing xuyên nhiều tầng component,
+  `createBrowserRouter` nhận biến `routes` khai báo riêng thay vì mảng inline
+  thì không trace được, việc join FE↔BE vẫn cần path khớp chính xác sau khi
+  chuẩn hoá (`${id}`/`:id` chuẩn hoá về cùng dạng `{param}`, nhưng HTTP
+  method không phải literal hoặc query string phía sau path thì không khớp).
 - **Object-literal export không được parse** (ví dụ `export const api = {
   get: ... }`) — chỉ index `function`/`class`/`const () => {}` top-level và
   method trong class.
 - **Staleness khi rename/xoá:** incremental index chỉ re-resolve file vừa
   parse lại; caller ở file *không đổi* trỏ tới symbol *đã đổi tên* ở file
   khác có thể bị cũ tới khi chạy `codegraph index --force`.
+- **`maxDepth` mặc định (4) có thể quá nông cho luồng full-stack.** Route →
+  page → hook → API client → endpoint → controller → service → repository dễ
+  dàng vượt 6 hop. `code_path`/`code_impact` nhận tham số `depth` — tăng lên
+  khi query full-stack thay vì mặc định "no path" nghĩa là "không có quan
+  hệ".
 
 Không cái nào ở trên phủ nhận giá trị cốt lõi (call graph, REST endpoint,
 DI/JPA/Kafka phía Java, component/hook phía React, blast-radius) — chỉ là

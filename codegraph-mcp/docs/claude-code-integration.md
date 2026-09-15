@@ -172,27 +172,48 @@ accordingly:
 
 - **Call resolution is best-effort, not a compiler.** Java: constructor/field
   type-based resolution, same-package resolution, plus a "unique name in
-  project" fallback. TypeScript: same-file, then relative-import resolution,
-  then a unique-name fallback. Ambiguous calls (multiple same-named
-  methods/functions in the project) are silently **not** wired into an edge
-  rather than guessed — a `code_impact` or `code_path` miss can mean
-  "ambiguous", not "no relationship."
+  project" fallback — but only for a genuinely receiver-less call. A call
+  with an explicit receiver that doesn't resolve to a project class (external
+  or library code, e.g. `Objects.equals(...)`, `someBean.libMethod()`) is
+  left unresolved rather than falling through to that fallback, which used to
+  fabricate an edge to an unrelated same-named method — including, in one
+  real case found by dogfooding, a self-referential edge from a method to
+  itself. TypeScript: same-file, then relative-import resolution, then a
+  unique-name fallback with the same external-receiver guard. Ambiguous
+  *receiver-less* calls (multiple same-named methods/functions in the
+  project) are silently **not** wired into an edge rather than guessed — a
+  `code_impact` or `code_path` miss can mean "ambiguous" or "external", not
+  "no relationship."
 - **Java/Spring — modeled (Phase 2 done):** constructor injection,
   `@Autowired` field injection, JPA entity graph (`@Entity` +
   `@OneToOne`/`@OneToMany`/`@ManyToOne`/`@ManyToMany`, collection element
   type via generics), repository → entity linking (`JpaRepository<Entity,
   Id>`), Kafka producer (`KafkaTemplate.send("topic", ...)` with a literal
   topic string) / consumer (`@KafkaListener`) graph converging on one shared
-  topic node, and best-effort test mapping (`@Test`/`@SpringBootTest`/
+  topic node, best-effort test mapping (`@Test`/`@SpringBootTest`/
   `@WebMvcTest`/`@DataJpaTest` class → subject class by `XTest`/`XIT` naming
-  convention).
+  convention), Lombok member synthesis (`@Data`/`@Value`/`@Getter`/`@Setter`/
+  `@Builder`/`@SuperBuilder`/`@ToString`/`@EqualsAndHashCode`/`@Slf4j` and the
+  other `@Log*` annotations — a call through a Lombok-generated
+  getter/setter/builder resolves like any hand-written method; an explicit
+  member is never overridden), and Spring config binding
+  (`@Value("${key}")` / `@ConfigurationProperties(prefix=...)` resolves to a
+  `CONFIG_PROPERTY` node parsed from `application*`/`bootstrap*`
+  `.properties`/`.yml`/`.yaml`, with relaxed-binding key matching so
+  `pool-size` in YAML and `poolSize` in Java converge on one node).
 - **Java/Spring — still not modeled:** setter injection (only constructor
   params + `@Autowired` fields), `@Qualifier`-based disambiguation, dynamic
   Kafka topic expressions (non-literal `.send(...)` args are skipped, not
-  guessed), Feign/WebClient/RestTemplate/Spring Batch/Scheduler/Redis.
+  guessed), Feign/WebClient/RestTemplate/Spring Batch/Scheduler/Redis, Spring
+  application events (`publishEvent`/`@EventListener`).
 - **React — modeled (Phase 3 done):** component/hook tagging, render tree
-  (`RENDERS`, with prop names in `metadata.props`), hook usage (`USES_HOOK`),
-  plain function calls (`CALLS`), react-router mapping to a `ROUTE` node —
+  (`RENDERS`, with prop names in `metadata.props`) for both function
+  components and `class X extends React.Component`/`PureComponent` — a class
+  component's render edge is recorded on both the class itself (so looking
+  it up by name works) and its `render` method (so a full-stack `code_path`
+  can keep stepping through nested class components) — hook usage
+  (`USES_HOOK`), plain function calls (`CALLS`), react-router mapping to a
+  `ROUTE` node —
   both the JSX `<Route path="..." element={<X/>}>` (v6) / `component={X}`
   (v5) style and the v6.4+ data-router `createBrowserRouter([{ path,
   element }, ...])` object-config style (including nested `children`
@@ -207,7 +228,10 @@ accordingly:
   blocks, not classes). Verified end-to-end (route → page → hook → API
   client → shared `REST_ENDPOINT` → controller method) against an
   unmodified real-world Spring Boot + React repo, not just hand-written
-  fixtures.
+  fixtures. JSX inside a plain `.js`/`.jsx` file (not `.tsx`) is parsed with
+  the JSX-aware grammar the same as `.tsx` — only bare `.ts` uses the
+  non-JSX grammar, since that's the one extension where `<Type>value`-style
+  casts would be ambiguous with JSX.
 - **React — still not modeled:** Redux/Context/state-management flows
   (`useSelector`/`dispatch`); a `createBrowserRouter` call passed a
   separately-declared `routes` variable instead of an inline array literal

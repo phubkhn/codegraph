@@ -107,6 +107,12 @@ security:
   deny: []   # extra glob patterns never indexed (on top of built-in .env/*.pem/*.key/etc.)
 ```
 
+When `frameworks.spring` is enabled, `application*`/`bootstrap*`
+`.properties`/`.yml`/`.yaml` files are also scanned (any other `.properties`/
+`.yml`/`.yaml` file is discovered but parsed into zero nodes — only Spring's
+own config-file naming convention is recognized) so `@Value("${key}")` /
+`@ConfigurationProperties` bindings resolve to a real `CONFIG_PROPERTY` node.
+
 `.gitignore` and `.codegraphignore` in the project root are honored
 automatically, on top of the built-in ignore/deny lists (`node_modules`,
 `target`, `build`, `dist`, `.git`, `.env*`, `*.pem`, `*.key`, ...).

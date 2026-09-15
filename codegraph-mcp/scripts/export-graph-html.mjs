@@ -39,6 +39,8 @@ const COLORS = {
   ENTITY: "#e0576a",
   KAFKA_TOPIC: "#000000",
   TEST: "#b8860b",
+  ROUTE: "#ff8fa3",
+  CONFIG_PROPERTY: "#8d6e63",
 };
 
 const visNodes = nodes.map((n) => ({
