@@ -30,6 +30,7 @@ export class TypeScriptParser implements LanguageParser {
         if (!stmt) continue;
         handleTopLevel(stmt, source, filePath, symbols, imports, references);
       }
+      collectRouterConfigCalls(root, filePath, references, source);
 
       return { path: filePath, language: "typescript", symbols, imports, references, typeRelations };
     } catch (err) {
@@ -314,16 +315,86 @@ function extractJsxAttributes(opening: Node, source: string): Record<string, str
       attrs[name] = stripQuotes(textOf(valueNode, source));
     } else if (valueNode.type === "jsx_expression") {
       const inner = valueNode.namedChild(0);
-      if (inner?.type === "jsx_self_closing_element") {
-        attrs[name] = textOf(inner.childForFieldName("name"), source);
-      } else if (inner?.type === "jsx_element") {
-        attrs[name] = textOf(inner.childForFieldName("open_tag")?.childForFieldName("name"), source);
-      } else if (inner) {
-        attrs[name] = textOf(inner, source).slice(0, 200);
-      }
+      if (inner) attrs[name] = jsxOrIdentifierName(inner, source);
     }
   }
   return attrs;
+}
+
+/** Best-effort name for a JSX-or-plain-identifier value: a JSX tag's name, or the raw source text
+ *  (capped) for anything else — used for `element`/`component` attribute/property values, which are
+ *  either `<X/>` (JSX) or a bare component reference (identifier). */
+function jsxOrIdentifierName(node: Node, source: string): string {
+  if (node.type === "jsx_self_closing_element") {
+    return textOf(node.childForFieldName("name"), source);
+  }
+  if (node.type === "jsx_element") {
+    return textOf(node.childForFieldName("open_tag")?.childForFieldName("name"), source);
+  }
+  return textOf(node, source).slice(0, 200);
+}
+
+const ROUTER_FACTORY_NAMES = new Set(["createBrowserRouter", "createHashRouter", "createMemoryRouter"]);
+
+/**
+ * Detects react-router's v6.4+ data-router config style — `createBrowserRouter([{ path, element },
+ * ...])`, including nested `children` arrays — and emits it as a synthetic `kind: "jsx", rawName:
+ * "Route"` reference, the exact same shape the JSX `<Route path=... element=.../>` case produces, so
+ * react-tags.ts's single `applyRouteTags` pass handles both styles with no extra logic. Runs over the
+ * whole file root (not per-function) since this call is almost always at module top level. Only the
+ * inline-array-literal argument is handled — a separately-declared `const routes = [...]` passed in
+ * by reference isn't traced, and nested child paths aren't joined with their parent's path prefix.
+ */
+function collectRouterConfigCalls(root: Node, filePath: string, references: UnresolvedReference[], source: string): void {
+  for (const call of root.descendantsOfType(["call_expression"])) {
+    if (!call) continue;
+    const fnNode = call.childForFieldName("function");
+    if (!fnNode || fnNode.type !== "identifier" || !ROUTER_FACTORY_NAMES.has(textOf(fnNode, source))) continue;
+    const routesArray = call.childForFieldName("arguments")?.namedChild(0);
+    if (routesArray?.type === "array") collectRouteObjects(routesArray, filePath, references, source, lineOf(call));
+  }
+}
+
+function collectRouteObjects(
+  arrayNode: Node,
+  filePath: string,
+  references: UnresolvedReference[],
+  source: string,
+  line: number,
+): void {
+  for (const el of arrayNode.namedChildren) {
+    if (!el || el.type !== "object") continue;
+    let path: string | undefined;
+    let componentName: string | undefined;
+    let childrenArray: Node | undefined;
+
+    for (const prop of el.namedChildren) {
+      if (!prop || prop.type !== "pair") continue;
+      const keyNode = prop.childForFieldName("key");
+      const valueNode = prop.childForFieldName("value");
+      if (!keyNode || !valueNode) continue;
+      const key = textOf(keyNode, source).replace(/['"]/g, "");
+      if (key === "path" && valueNode.type === "string") {
+        path = stripQuotes(textOf(valueNode, source));
+      } else if (key === "element" || key === "Component" || key === "component") {
+        componentName = jsxOrIdentifierName(valueNode, source);
+      } else if (key === "children" && valueNode.type === "array") {
+        childrenArray = valueNode;
+      }
+    }
+
+    if (path && componentName) {
+      references.push({
+        fromQualifiedName: filePath,
+        rawName: "Route",
+        kind: "jsx",
+        edgeType: "RENDERS",
+        line,
+        attributes: { path, element: componentName },
+      });
+    }
+    if (childrenArray) collectRouteObjects(childrenArray, filePath, references, source, line);
+  }
 }
 
 const HTTP_METHODS = new Set(["get", "post", "put", "patch", "delete", "head", "options"]);
@@ -368,11 +439,20 @@ function collectApiClientCalls(body: Node, fromQualifiedName: string, references
   }
 }
 
-/** String literal or template literal text with `${...}` interpolations replaced by `{param}`, e.g. `/api/loans/${id}` -> `/api/loans/{param}`. */
+/**
+ * String literal or template literal text with `${...}` interpolations replaced by `{param}`, e.g.
+ * `/api/loans/${id}` -> `/api/loans/{param}`. A *leading* substitution (`${API_BASE_URL}/api/loans`)
+ * is dropped entirely rather than turned into `{param}` — in practice that position is always a base
+ * URL prefix built at runtime (env var, config value), never a path segment, so keeping it as a
+ * literal `{param}` would make the path never match the backend's real route.
+ */
 function stringOrTemplatePath(node: Node, source: string): string | undefined {
   if (node.type === "string") return stripQuotes(textOf(node, source));
   if (node.type === "template_string") {
-    return node.namedChildren
+    const children = node.namedChildren;
+    const startIndex = children[0]?.type === "template_substitution" ? 1 : 0;
+    return children
+      .slice(startIndex)
       .map((c) => (c && c.type === "template_substitution" ? "{param}" : c ? textOf(c, source) : ""))
       .join("")
       .replace(/`/g, "");

@@ -9,4 +9,8 @@ public class LoanController {
     @PostMapping
     public void create() {
     }
+
+    @DeleteMapping("/{id}")
+    public void delete(@PathVariable Long id) {
+    }
 }

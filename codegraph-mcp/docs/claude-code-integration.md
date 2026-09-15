@@ -192,20 +192,29 @@ accordingly:
   guessed), Feign/WebClient/RestTemplate/Spring Batch/Scheduler/Redis.
 - **React — modeled (Phase 3 done):** component/hook tagging, render tree
   (`RENDERS`, with prop names in `metadata.props`), hook usage (`USES_HOOK`),
-  plain function calls (`CALLS`), react-router `<Route path="..."
-  element={<X/>}>` (v6) / `component={X}` (v5) mapping to a `ROUTE` node,
-  frontend API-client detection (`fetch(...)` and any `xxx.get/post/put/
-  patch/delete(url, ...)` call — axios, a custom wrapper, no specific library
-  required) that **joins the same shared node** as the matching Spring
-  `REST_ENDPOINT` when both sides are indexed, and file-naming-based test
-  mapping (`LoanForm.test.tsx` → `LoanForm`, TESTED_BY the file itself since
-  JS tests are `describe`/`it` blocks, not classes).
+  plain function calls (`CALLS`), react-router mapping to a `ROUTE` node —
+  both the JSX `<Route path="..." element={<X/>}>` (v6) / `component={X}`
+  (v5) style and the v6.4+ data-router `createBrowserRouter([{ path,
+  element }, ...])` object-config style (including nested `children`
+  arrays, though a nested child's path isn't joined with its parent's
+  prefix) — frontend API-client detection (`fetch(...)` and any
+  `xxx.get/post/put/patch/delete(url, ...)` call — axios, a custom wrapper,
+  no specific library required, a leading `` `${BASE_URL}/...` `` template
+  prefix is stripped rather than treated as a path segment) that **joins the
+  same shared node** as the matching Spring `REST_ENDPOINT` when both sides
+  are indexed, and file-naming-based test mapping (`LoanForm.test.tsx` →
+  `LoanForm`, TESTED_BY the file itself since JS tests are `describe`/`it`
+  blocks, not classes). Verified end-to-end (route → page → hook → API
+  client → shared `REST_ENDPOINT` → controller method) against an
+  unmodified real-world Spring Boot + React repo, not just hand-written
+  fixtures.
 - **React — still not modeled:** Redux/Context/state-management flows
-  (`useSelector`/`dispatch`), and the FE↔BE endpoint join requires the path
-  to match exactly after normalization — a `${id}`/`:id`-shaped template
-  segment normalizes to the same `{param}` Spring uses, but anything odder
-  (query strings, a base-URL prefix built at runtime, a non-literal HTTP
-  method) won't match.
+  (`useSelector`/`dispatch`); a `createBrowserRouter` call passed a
+  separately-declared `routes` variable instead of an inline array literal
+  isn't traced; the FE↔BE endpoint join still requires the path to match
+  exactly after normalization — a `${id}`/`:id`-shaped template segment
+  normalizes to the same `{param}` Spring uses, but a non-literal HTTP
+  method or a query string appended to the path won't match.
 - **Object-literal exports aren't parsed** (e.g. `export const api = { get:
   ... }`) — only top-level `function`/`class`/`const () => {}` declarations
   and class methods are indexed. A common `api.get(...)` client pattern will

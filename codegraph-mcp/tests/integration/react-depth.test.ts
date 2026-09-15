@@ -64,4 +64,26 @@ describe("React depth: props, API client join, router, test mapping", () => {
     expect(testedBy?.node.type).toBe("FILE");
     expect(testedBy?.node.qualifiedName).toBe("frontend/src/components/LoanForm.test.tsx");
   });
+
+  it("strips a leading ${BASE_URL} template prefix so the path still maps to the backend endpoint", () => {
+    const deleteLoan = project.queryService.resolveSymbol("frontend/src/api/loanApi.ts::deleteLoan")!;
+    const controllerMethod = project.queryService.resolveSymbol("com.example.loan.LoanController.delete")!;
+
+    const outgoing = project.queryService.getOutgoingByType(deleteLoan.id);
+    const mapsTo = outgoing.find((r) => r.edgeType === "MAPS_TO_ENDPOINT");
+    expect(mapsTo?.node.type).toBe("REST_ENDPOINT");
+    expect(mapsTo?.node.name).toBe("DELETE /api/loans/{param}");
+
+    const endpointOutgoing = project.queryService.getOutgoingByType(mapsTo!.node.id);
+    const handlerEdge = endpointOutgoing.find((r) => r.edgeType === "CALLS" && r.node.qualifiedName === controllerMethod.qualifiedName);
+    expect(handlerEdge).toBeDefined();
+  });
+
+  it("detects react-router v6.4+ createBrowserRouter([{path, element}]) object config", () => {
+    const route = project.queryService.resolveSymbol("ROUTE:/loans/create");
+    expect(route?.type).toBe("ROUTE");
+    const outgoing = project.queryService.getOutgoingByType(route!.id);
+    const renders = outgoing.find((r) => r.edgeType === "RENDERS");
+    expect(renders?.node.qualifiedName).toBe("frontend/src/pages/LoanNewPage.tsx::LoanNewPage");
+  });
 });

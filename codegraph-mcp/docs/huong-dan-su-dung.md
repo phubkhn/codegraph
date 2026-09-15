@@ -130,12 +130,78 @@ cộng thêm danh sách ignore/deny mặc định (`node_modules`, `target`, `bu
 
 ---
 
-## 4. Áp dụng vào Claude Code như một MCP server
+## 4. Xem trực quan graph để kiểm tra
+
+Đây là câu hỏi thường gặp khi mới index xong: "graph có đúng không, làm sao
+xem cho trực quan?". Có 3 cách, từ nhanh tới đầy đủ nhất.
+
+### 4.1. Kiểm tra nhanh bằng CLI có sẵn (không cần thêm gì)
+
+Không cần công cụ ngoài, dùng ngay các lệnh đã có:
+
+```bash
+codegraph status                       # tổng số file/node/edge
+codegraph search "LoanService"         # graph có thấy symbol này không
+codegraph explore "LoanService.disburse"   # xem source + callers/callees
+codegraph impact "LoanService.disburse"    # xem blast-radius dạng cây/text
+codegraph path "LoanPage" "LoanController.create"  # xem đường đi giữa 2 symbol
+```
+
+Cách này đủ dùng cho phần lớn việc "check" hằng ngày vì output đã có cấu
+trúc rõ ràng (source, callers, callees, endpoint...).
+
+### 4.2. Xem thẳng dữ liệu trong SQLite (khi cần đối chiếu số liệu chi tiết)
+
+Graph chỉ là 1 file SQLite với 3 bảng `files`, `nodes`, `edges`
+(`nodes.metadata`/`edges.metadata` là JSON). Dùng `sqlite3` CLI có sẵn trên
+máy để query trực tiếp:
+
+```bash
+sqlite3 /path/to/your-project/.codegraph/graph.db \
+  "SELECT type, count(*) FROM nodes GROUP BY type;"
+
+sqlite3 /path/to/your-project/.codegraph/graph.db \
+  "SELECT n1.name, e.type, n2.name
+   FROM edges e
+   JOIN nodes n1 ON n1.id = e.source
+   JOIN nodes n2 ON n2.id = e.target
+   WHERE n1.name = 'LoanService' OR n2.name = 'LoanService';"
+```
+
+Hoặc dùng GUI như [DB Browser for SQLite](https://sqlitebrowser.org/) để mở
+`.codegraph/graph.db` và duyệt bảng bằng chuột.
+
+### 4.3. Xem dạng đồ thị (hình vẽ node-edge) trong trình duyệt
+
+Repo có sẵn script `scripts/export-graph-html.mjs` xuất toàn bộ graph ra 1
+file HTML độc lập (dùng [vis-network](https://visjs.github.io/vis-network/)
+qua CDN), tô màu theo loại node, có ô lọc theo tên:
+
+```bash
+cd codegraph-mcp
+node scripts/export-graph-html.mjs /path/to/your-project codegraph.html
+open codegraph.html   # macOS; Linux dùng xdg-open, Windows dùng start
+```
+
+Mở file này lên sẽ thấy các node (file/class/method/component...) tô màu
+theo type, các cạnh có nhãn quan hệ (`CALLS`, `CONTAINS`, `IMPORTS`,
+`USES_HOOK`...), kéo/zoom được, gõ vào ô filter để chỉ hiện node có tên
+khớp. Cần internet để tải vis-network từ CDN lúc mở file (dữ liệu graph thì
+đã nhúng sẵn trong file, không gọi network để lấy data).
+
+Dùng cách này khi muốn nhìn tổng quan cấu trúc, phát hiện node bị cô lập
+(không có cạnh nào — có thể là dấu hiệu parser bỏ sót), hoặc kiểm tra trực
+quan xem 1 luồng full-stack có nối liền từ React xuống Spring hay không
+trước khi tin vào `code_path`.
+
+---
+
+## 5. Áp dụng vào Claude Code như một MCP server
 
 Đây là cách dùng "chuẩn" nhất — đăng ký làm MCP server để Claude Code tự gọi
 3 tool ở trên khi cần.
 
-### 4.1. Tạo `.mcp.json` ở gốc project đích
+### 5.1. Tạo `.mcp.json` ở gốc project đích
 
 ```json
 {
@@ -156,7 +222,7 @@ cộng thêm danh sách ignore/deny mặc định (`node_modules`, `target`, `bu
 tuyệt đối tới `codegraph-mcp` vì package chưa publish lên registry. Sau khi
 thêm, restart Claude Code hoặc chạy `/mcp` để kết nối lại.
 
-### 4.2. Tự động re-index bằng hook `SessionStart`
+### 5.2. Tự động re-index bằng hook `SessionStart`
 
 Thêm vào `.claude/settings.json` (commit vào repo) để mỗi phiên Claude Code
 mới tự re-index trước khi làm gì khác:
@@ -186,14 +252,14 @@ nhỏ.
 
 ---
 
-## 5. Áp dụng vào Skill (Claude Code Skill)
+## 6. Áp dụng vào Skill (Claude Code Skill)
 
 Một **Skill** trong Claude Code là 1 file Markdown (thường ở
 `.claude/skills/<ten-skill>/SKILL.md` trong project, hoặc
 `~/.claude/skills/` cho skill dùng chung mọi project) chứa hướng dẫn mà
 Claude nạp vào khi bạn gọi `/ten-skill`. Skill **không tự có quyền truy cập
 tool mới** — nó chỉ hướng dẫn Claude *cách dùng* các tool đã có sẵn (kể cả
-MCP tool đã đăng ký ở mục 4). Vì vậy điều kiện tiên quyết là project đích đã
+MCP tool đã đăng ký ở mục 5). Vì vậy điều kiện tiên quyết là project đích đã
 có `.mcp.json` trỏ tới `codegraph mcp` như trên.
 
 Ví dụ tạo skill `.claude/skills/code-graph/SKILL.md`:
@@ -228,7 +294,7 @@ dùng.
 
 ---
 
-## 6. Áp dụng vào Agent (subagent)
+## 7. Áp dụng vào Agent (subagent)
 
 **Subagent** là 1 agent con định nghĩa ở `.claude/agents/<ten-agent>.md`
 (project) hoặc `~/.claude/agents/` (toàn cục), có `system prompt` và danh
@@ -267,18 +333,18 @@ Quy trình:
 ```
 
 Tên tool MCP theo format `mcp__<server-name-trong-mcp.json>__<tool-name>`,
-tức nếu bạn đặt server tên `codegraph` như ví dụ ở mục 4.1 thì 3 tool sẽ là
+tức nếu bạn đặt server tên `codegraph` như ví dụ ở mục 5.1 thì 3 tool sẽ là
 `mcp__codegraph__code_explore`, `mcp__codegraph__code_impact`,
 `mcp__codegraph__code_path`.
 
 ---
 
-## 7. Áp dụng vào script khác (ngoài Claude Code)
+## 8. Áp dụng vào script khác (ngoài Claude Code)
 
 `codegraph-mcp` chưa publish npm package, nên dùng từ script khác theo 2
 cách:
 
-### 7.1. Gọi CLI qua subprocess (đơn giản, khuyến nghị)
+### 8.1. Gọi CLI qua subprocess (đơn giản, khuyến nghị)
 
 ```bash
 # Node.js
@@ -299,7 +365,7 @@ node /path/to/codegraph-mcp/dist/cli/index.js impact LoanService.disburse --dept
 Cách này phù hợp cho CI script, pre-commit hook, hoặc agent framework khác
 (không phải Claude Code) muốn gọi ra ngoài như 1 CLI tool thông thường.
 
-### 7.2. Gọi bất kỳ MCP client nào khác
+### 8.2. Gọi bất kỳ MCP client nào khác
 
 Vì `codegraph mcp` chỉ là 1 MCP server chuẩn chạy qua stdio, **bất kỳ MCP
 client nào** (không riêng Claude Code — ví dụ 1 script tự viết dùng
@@ -311,7 +377,7 @@ node /path/to/codegraph-mcp/dist/cli/index.js mcp
 
 và nói chuyện qua giao thức MCP chuẩn (`tools/list`, `tools/call`).
 
-### 7.3. Import trực tiếp module core (nâng cao, dùng nội bộ)
+### 8.3. Import trực tiếp module core (nâng cao, dùng nội bộ)
 
 Nếu script Node.js của bạn nằm trong monorepo và muốn tránh chi phí spawn
 process, có thể import thẳng `AppContext` (không phải API public đã ổn định,
@@ -330,7 +396,7 @@ bạn kiểm soát cả 2 phía (script và version của `codegraph-mcp`).
 
 ---
 
-## 8. Quy trình SDLC gợi ý (khi dùng qua Claude Code)
+## 9. Quy trình SDLC gợi ý (khi dùng qua Claude Code)
 
 ```
 Yêu cầu / ticket
@@ -357,7 +423,7 @@ tìm test theo naming convention (chưa có edge TESTED_BY bên đó)
 
 ---
 
-## 9. Giới hạn cần biết (đừng tin graph 100%)
+## 10. Giới hạn cần biết (đừng tin graph 100%)
 
 - **Call resolution là best-effort, không phải compiler.** Java: theo type
   constructor/field, cùng package, rồi fallback "tên duy nhất trong project".
@@ -390,7 +456,7 @@ nhận lại bằng source code thật (`code_explore`) trước khi kết luậ
 
 ---
 
-## 10. Xử lý sự cố (Troubleshooting)
+## 11. Xử lý sự cố (Troubleshooting)
 
 ```bash
 # Xem kích thước / độ mới của graph
