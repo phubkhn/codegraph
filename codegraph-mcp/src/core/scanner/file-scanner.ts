@@ -14,7 +14,7 @@ export interface ScannedFile {
   absPath: string;
   /** path relative to project root, forward-slash separated */
   relPath: string;
-  language: "java" | "typescript" | "unknown";
+  language: "java" | "typescript" | "properties" | "unknown";
 }
 
 const LANGUAGE_BY_EXT: Record<string, ScannedFile["language"]> = {
@@ -23,6 +23,9 @@ const LANGUAGE_BY_EXT: Record<string, ScannedFile["language"]> = {
   ".tsx": "typescript",
   ".js": "typescript",
   ".jsx": "typescript",
+  ".properties": "properties",
+  ".yml": "properties",
+  ".yaml": "properties",
 };
 
 export interface ScanResult {
@@ -68,15 +71,23 @@ export async function scanProject(projectRoot: string, config: CodegraphConfig):
     for (const entry of entries) {
       const abs = join(dir, entry.name);
       const rel = relative(projectRoot, abs).split("\\").join("/");
-      if (ig.ignores(rel)) {
-        ignored++;
-        continue;
-      }
       if (entry.isDirectory()) {
+        // Trailing slash so a directory-only pattern (`node_modules/`) prunes the
+        // whole subtree here instead of matching only once we're already inside it
+        // and filtering its contents file-by-file (which still walks node_modules/
+        // .git/etc. in full).
+        if (ig.ignores(`${rel}/`)) {
+          ignored++;
+          continue;
+        }
         await walk(abs);
         continue;
       }
       if (!entry.isFile()) continue;
+      if (ig.ignores(rel)) {
+        ignored++;
+        continue;
+      }
       discovered++;
       if (denyMatchers.some((m) => m(rel))) {
         ignored++;

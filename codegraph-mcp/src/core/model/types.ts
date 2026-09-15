@@ -13,7 +13,8 @@ export type NodeType =
   | "ENTITY"
   | "KAFKA_TOPIC"
   | "TEST"
-  | "ROUTE";
+  | "ROUTE"
+  | "CONFIG_PROPERTY";
 
 export type EdgeType =
   | "CONTAINS"

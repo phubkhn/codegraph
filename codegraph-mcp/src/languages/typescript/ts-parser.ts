@@ -20,7 +20,12 @@ export class TypeScriptParser implements LanguageParser {
     const typeRelations: ParsedFile["typeRelations"] = [];
 
     try {
-      const grammar: GrammarName = filePath.endsWith(".tsx") || filePath.endsWith(".jsx") ? "tsx" : "typescript";
+      // Only bare `.ts` needs the plain grammar (its `<Type>value` cast syntax
+      // is ambiguous with JSX). `.js`/`.jsx` can and very commonly do contain
+      // JSX without a `.jsx`/`.tsx` extension (pre-TypeScript React code,
+      // Babel-compiled projects) — the "typescript" grammar can't parse that
+      // JSX at all, so such files silently got zero hook/JSX/RENDERS references.
+      const grammar: GrammarName = filePath.endsWith(".ts") ? "typescript" : "tsx";
       const parser = await createParser(grammar);
       const tree = parser.parse(source);
       if (!tree) throw new Error("tree-sitter returned no parse tree");

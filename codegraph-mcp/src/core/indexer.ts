@@ -7,7 +7,10 @@ import { ParserRegistry } from "./parser/parser-registry.js";
 import { JavaParser } from "../languages/java/java-parser.js";
 import { TypeScriptParser } from "../languages/typescript/ts-parser.js";
 import { applySpringTags } from "../languages/java/spring-tags.js";
+import { applyLombokTags } from "../languages/java/lombok-tags.js";
+import { applyConfigBindingTags } from "../languages/java/config-binding-tags.js";
 import { applyReactTags } from "../languages/typescript/react-tags.js";
+import { PropertiesParser } from "../languages/config/properties-parser.js";
 import { SqliteGraphStore } from "./storage/sqlite-store.js";
 import { ProjectIndex } from "./graph/project-index.js";
 import { buildGraph } from "./graph/graph-builder.js";
@@ -35,6 +38,9 @@ export function createParserRegistry(config: CodegraphConfig): ParserRegistry {
   const registry = new ParserRegistry();
   if (config.languages.java) registry.register(new JavaParser());
   if (config.languages.typescript) registry.register(new TypeScriptParser());
+  // Spring config files (application.yml/.properties, bootstrap.yml/.properties) so
+  // `@Value("${key}")` / `@ConfigurationProperties` bindings resolve to a real node.
+  if (config.frameworks.spring) registry.register(new PropertiesParser());
   return registry;
 }
 
@@ -90,7 +96,9 @@ export async function runIndex(projectRoot: string, config: CodegraphConfig, opt
         failed++;
         log(`parse error: ${file.relPath}: ${parsed.parseError}`);
       }
+      if (parsed.language === "java") applyLombokTags(parsed);
       if (parsed.language === "java" && config.frameworks.spring) applySpringTags(parsed);
+      if (parsed.language === "java" && config.frameworks.spring) applyConfigBindingTags(parsed);
       if (parsed.language === "typescript" && config.frameworks.react) applyReactTags(parsed);
       parsedFiles.push(parsed);
       store.upsertFile(file.relPath, file.language, hashOf(source));

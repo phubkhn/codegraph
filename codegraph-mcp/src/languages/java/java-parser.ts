@@ -189,6 +189,7 @@ function handleFieldDeclaration(
   const genericArg = genericTypeArgs(typeNode, source)[0];
   const annotations = extractAnnotations(node, source);
   const annotationNames = annotations.map((a) => a.name);
+  const modifiers = extractModifierKeywords(node, source);
 
   for (const declarator of childrenByType(node, "variable_declarator")) {
     const nameNode = declarator.childForFieldName("name");
@@ -201,7 +202,7 @@ function handleFieldDeclaration(
       startLine: lineOf(node),
       endLine: endLineOf(node),
       parentQualifiedName: classQualifiedName,
-      metadata: { language: "java", declaredType, genericArg, kind: "field", annotations },
+      metadata: { language: "java", declaredType, genericArg, kind: "field", annotations, modifiers },
     });
   }
 

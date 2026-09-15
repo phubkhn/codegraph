@@ -15,7 +15,15 @@ This follows `codegraph-mcp-implementation-plan.md`: Milestones 1-3
   (`@Entity` + `@OneToOne/@OneToMany/@ManyToOne/@ManyToMany`), repository
   generic-entity linking, Kafka producer/consumer graph, best-effort test
   mapping (`@Test`/`@SpringBootTest`/... class → subject class by naming
-  convention).
+  convention), Lombok member synthesis (`@Data`/`@Value`/`@Getter`/`@Setter`/
+  `@Builder`/`@SuperBuilder`/`@ToString`/`@EqualsAndHashCode`/`@Slf4j` and the
+  other `@Log*` annotations — so a call through a Lombok-generated
+  getter/setter/builder resolves instead of dead-ending), and Spring config
+  binding (`@Value("${key}")` / `@ConfigurationProperties(prefix=...)` on a
+  field resolves to a `CONFIG_PROPERTY` node parsed from
+  `application*.properties`/`.yml`/`.yaml` or `bootstrap*.{properties,yml,yaml}`,
+  with relaxed-binding key matching so `pool-size` in YAML and `poolSize` in
+  Java converge on the same node).
 - **Phase 3**: JSX prop names on render edges, frontend API-client detection
   (`fetch`/axios-shaped calls) that resolves to the **same shared node** as
   the matching Spring `REST_ENDPOINT` — so a full-stack trace from a
@@ -107,21 +115,27 @@ automatically, on top of the built-in ignore/deny lists (`node_modules`,
 
 - **Node types**: `FILE`, `CLASS`, `INTERFACE`, `ENUM`, `FUNCTION`, `METHOD`,
   `VARIABLE`, `REST_ENDPOINT`, `REACT_COMPONENT`, `REACT_HOOK`, `ENTITY`,
-  `KAFKA_TOPIC`, `TEST`, `ROUTE`.
+  `KAFKA_TOPIC`, `TEST`, `ROUTE`, `CONFIG_PROPERTY`.
 - **Edge types**: `CONTAINS`, `IMPORTS`, `CALLS`, `EXTENDS`, `IMPLEMENTS`,
   `RENDERS` (carries `metadata.props`: JSX prop names), `USES_HOOK`,
-  `DEPENDS_ON` (DI / JPA relationship / repository entity), `PRODUCES` /
-  `CONSUMES` (Kafka), `TESTED_BY`, `MAPS_TO_ENDPOINT` (frontend API-client
-  call → backend `REST_ENDPOINT`).
+  `DEPENDS_ON` (DI / JPA relationship / repository entity / config binding),
+  `PRODUCES` / `CONSUMES` (Kafka), `TESTED_BY`, `MAPS_TO_ENDPOINT` (frontend
+  API-client call → backend `REST_ENDPOINT`).
 - Spring/React specifics live in node `metadata` (e.g.
   `springComponentType`, `httpMethod`, `path`, `framework`,
-  `repositoryEntity`, `relationshipType`), not as new core concepts — the
-  core graph stays framework-agnostic; `*-tags.ts` per language is the only
-  place that knows about Spring/React annotations and conventions.
-- `REST_ENDPOINT`, `KAFKA_TOPIC`, and `ROUTE` nodes use a stable,
-  qualifiedName-only id (not file/line-based) so the same route/topic/endpoint
-  referenced from multiple files — a Kafka producer and its
-  `@KafkaListener` consumer, or a React `fetch("/api/loans", ...)` call and
+  `repositoryEntity`, `relationshipType`, `lombok`), not as new core concepts
+  — the core graph stays framework-agnostic; `*-tags.ts` per language is the
+  only place that knows about Spring/React annotations and conventions.
+- A Lombok-synthesized member (`getX`/`setX`/`isX`/`builder`/`toString`/
+  `equals`/`hashCode`/the `log` field) is a normal `METHOD`/`VARIABLE` node
+  carrying `metadata.lombok: true` and `metadata.generatedFrom` (which
+  annotation produced it) — everything that resolves against a real member
+  (calls, `code_impact`, ...) works on it unchanged. A member the source
+  already declares is never overridden by a synthesized one.
+- `REST_ENDPOINT`, `KAFKA_TOPIC`, `ROUTE`, and `CONFIG_PROPERTY` nodes use a
+  stable, qualifiedName-only id (not file/line-based) so the same
+  route/topic/endpoint/property referenced from multiple files — a Kafka
+  producer and its `@KafkaListener` consumer, or a React `fetch("/api/loans", ...)` call and
   the Spring `@PostMapping` that handles it — converges on one shared node
   instead of duplicating it. This is how the frontend and backend graphs join
   into one full-stack trace with no separate "integration" step.

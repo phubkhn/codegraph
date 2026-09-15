@@ -118,9 +118,9 @@ export function buildGraph(files: ParsedFile[], existingIndex: ProjectIndex): Bu
     for (const ref of file.references) {
       const fromNode = resolveFromNode(ref, file, index);
       if (!fromNode) continue;
-      const resolved = resolveReference(ref, file, index);
-      if (!resolved) continue;
-      edges.push(makeEdge(fromNode.id, resolved.node.id, ref.edgeType, { confidence: resolved.confidence, ...refEdgeMetadata(ref) }));
+      for (const resolved of resolveReference(ref, file, index)) {
+        edges.push(makeEdge(fromNode.id, resolved.node.id, ref.edgeType, { confidence: resolved.confidence, ...refEdgeMetadata(ref) }));
+      }
     }
   }
 
@@ -139,6 +139,9 @@ function refEdgeMetadata(ref: UnresolvedReference): Record<string, unknown> {
   if (ref.edgeType === "MAPS_TO_ENDPOINT" && ref.attributes) {
     return { httpMethod: ref.attributes.httpMethod, path: ref.attributes.path };
   }
+  if (ref.edgeType === "DEPENDS_ON" && ref.attributes) {
+    return { ...ref.attributes };
+  }
   return {};
 }
 
@@ -147,18 +150,40 @@ interface Resolution {
   confidence: ResolutionConfidence;
 }
 
-function resolveReference(ref: UnresolvedReference, file: ParsedFile, index: ProjectIndex): Resolution | undefined {
+function resolveReference(ref: UnresolvedReference, file: ParsedFile, index: ProjectIndex): Resolution[] {
   // 0. Exact qualifiedName match — used for synthetic references (e.g. REST_ENDPOINT -> handler method)
   //    and any case where the raw name already is a fully-qualified symbol name.
   const exact = index.findByQualifiedName(ref.rawName);
-  if (exact.length >= 1) return { node: exact[0], confidence: "high" };
+  if (exact.length >= 1) return [{ node: exact[0], confidence: "high" }];
 
-  if (ref.kind === "jsx") return resolveByName(ref.rawName, file, index, ["REACT_COMPONENT", "FUNCTION"]);
-  if (ref.kind === "hook") return resolveByName(ref.rawName, file, index, ["REACT_HOOK", "FUNCTION"]);
+  if (ref.kind === "jsx") return resolveJsxTargets(ref, file, index);
+  if (ref.kind === "hook") return toList(resolveByName(ref.rawName, file, index, ["REACT_HOOK", "FUNCTION"]));
 
   // kind === "call"
-  if (file.language === "java") return resolveJavaCall(ref, file, index);
-  return resolveTsCall(ref, file, index);
+  return toList(file.language === "java" ? resolveJavaCall(ref, file, index) : resolveTsCall(ref, file, index));
+}
+
+function toList(resolved: Resolution | undefined): Resolution[] {
+  return resolved ? [resolved] : [];
+}
+
+/**
+ * `<Foo/>` covers both `function Foo() { return <jsx/> }` and
+ * `class Foo extends React.Component { render() { return <jsx/> } }` — the
+ * class itself never contains JSX, so it must be a valid resolution target
+ * (`code_impact`/`code_explore` on the component's name should find it), but a
+ * RENDERS edge landing ONLY on the class is a dead end for `code_path`: flow
+ * traversal doesn't follow CONTAINS, so it can't step from the class to its
+ * own `render` method to keep tracing a full-stack path through nested class
+ * components. Emitting a second edge straight to the `render` method keeps
+ * the class discoverable by name while making the chain continuable.
+ */
+function resolveJsxTargets(ref: UnresolvedReference, file: ParsedFile, index: ProjectIndex): Resolution[] {
+  const resolved = resolveByName(ref.rawName, file, index, ["REACT_COMPONENT", "FUNCTION", "CLASS"]);
+  if (!resolved || resolved.node.type !== "CLASS") return toList(resolved);
+
+  const renderMethod = index.findByQualifiedName(`${resolved.node.qualifiedName}.render`).find((n) => n.type === "METHOD");
+  return renderMethod ? [resolved, { node: renderMethod, confidence: resolved.confidence }] : [resolved];
 }
 
 function resolveByName(name: string, file: ParsedFile, index: ProjectIndex, types: NodeType[]): Resolution | undefined {
@@ -223,6 +248,14 @@ function resolveJavaCall(ref: UnresolvedReference, file: ParsedFile, index: Proj
     if (method) return { node: method, confidence: "high" };
   }
 
+  // A call with an explicit receiver (`Objects.equals(...)`, `someBean.libMethod()`)
+  // whose type didn't resolve to a project class is a call into external/library
+  // code. Falling through to the bare-name global fallback below would guess an
+  // unrelated same-named project method — often the calling method itself,
+  // fabricating a self-referential CALLS edge the source doesn't contain. Only a
+  // genuinely receiver-less call (no qualifier at all) should reach it.
+  if (ref.receiverType) return undefined;
+
   const globalCandidates = index.findBySimpleName(methodName, ["METHOD", "FUNCTION"]);
   if (globalCandidates.length === 1) return { node: globalCandidates[0], confidence: "medium" };
   return undefined;
@@ -242,6 +275,10 @@ function resolveTsCall(ref: UnresolvedReference, file: ParsedFile, index: Projec
       const method = index.findByQualifiedName(`${classResolution.node.qualifiedName}.${methodName}`).find((n) => n.type === "METHOD");
       if (method) return { node: method, confidence: "high" };
     }
+    // Receiver identified but not a project class (external/library object) —
+    // same rationale as resolveJavaCall: don't let the bare-name fallback below
+    // guess an unrelated method (or the calling method itself).
+    return undefined;
   }
 
   const globalCandidates = index.findBySimpleName(methodName, ["METHOD", "FUNCTION"]);

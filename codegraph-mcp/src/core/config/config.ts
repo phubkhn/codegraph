@@ -27,16 +27,23 @@ export interface CodegraphConfig {
   };
 }
 
+// Trailing-slash, unwrapped directory patterns (not "**/x/**"): the `ignore`
+// package only prunes a directory from the walk when the pattern matches the
+// directory path itself, and "**/x/**" matches everything *inside* x but never
+// x — so the scanner still recursed fully into ignored dirs and filtered their
+// contents one file at a time. A bare "x/" matches at any depth (no leading
+// "/") and matches the directory entry itself, so the walker can skip the
+// whole subtree.
 export const DEFAULT_IGNORE = [
-  "**/.git/**",
-  "**/node_modules/**",
-  "**/target/**",
-  "**/build/**",
-  "**/dist/**",
-  "**/coverage/**",
-  "**/.idea/**",
-  "**/.vscode/**",
-  "**/.codegraph/**",
+  ".git/",
+  "node_modules/",
+  "target/",
+  "build/",
+  "dist/",
+  "coverage/",
+  ".idea/",
+  ".vscode/",
+  ".codegraph/",
 ];
 
 export const DEFAULT_SECURITY_DENY = [

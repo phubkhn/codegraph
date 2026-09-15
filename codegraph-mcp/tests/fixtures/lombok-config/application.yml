@@ -1,0 +1,7 @@
+employee:
+  default-department: engineering
+app:
+  cache:
+    pool-size: 10
+server:
+  port: 8080
